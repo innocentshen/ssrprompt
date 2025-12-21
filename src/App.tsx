@@ -8,7 +8,7 @@ import { LoginPage } from './pages/LoginPage';
 const pageTitles: Record<string, string> = {
   prompts: 'Prompt 开发',
   evaluation: '评测中心',
-  traces: '观测',
+  traces: '历史记录',
   settings: '设置',
 };
 

@@ -9,12 +9,11 @@ function parseTable(tableText: string): string {
   const lines = tableText.trim().split('\n');
   if (lines.length < 2) return tableText;
 
+  // Simpler and more robust cell parsing
   const parseRow = (line: string): string[] => {
-    return line
-      .split('|')
-      .map((cell) => cell.trim())
-      .filter((_, i, arr) => i > 0 && i < arr.length - 1 || (arr[0] !== '' && i === 0) || (arr[arr.length - 1] !== '' && i === arr.length - 1))
-      .filter((cell) => cell !== '');
+    // Remove leading and trailing pipes, then split by |
+    const trimmed = line.replace(/^\||\|$/g, '');
+    return trimmed.split('|').map((cell) => cell.trim());
   };
 
   const headerCells = parseRow(lines[0]);
@@ -24,19 +23,19 @@ function parseTable(tableText: string): string {
   if (!separatorLine.match(/^[\s|:-]+$/)) return tableText;
 
   let html = '<div class="overflow-x-auto my-3"><table class="min-w-full border-collapse text-sm">';
-  html += '<thead><tr class="bg-slate-800 border-b border-slate-600">';
+  html += '<thead><tr class="bg-slate-800 light:bg-slate-100 border-b border-slate-600 light:border-slate-300">';
   headerCells.forEach((cell) => {
-    html += `<th class="px-3 py-2 text-left text-xs font-semibold text-slate-300 uppercase tracking-wider border border-slate-600">${cell}</th>`;
+    html += `<th class="px-3 py-2 text-left text-xs font-semibold text-slate-300 light:text-slate-700 uppercase tracking-wider border border-slate-600 light:border-slate-300 whitespace-nowrap">${cell}</th>`;
   });
   html += '</tr></thead><tbody>';
 
   for (let i = 2; i < lines.length; i++) {
     const cells = parseRow(lines[i]);
     if (cells.length === 0) continue;
-    const rowClass = i % 2 === 0 ? 'bg-slate-800/30' : 'bg-slate-800/50';
+    const rowClass = i % 2 === 0 ? 'bg-slate-800/30 light:bg-white' : 'bg-slate-800/50 light:bg-slate-50';
     html += `<tr class="${rowClass}">`;
     for (let j = 0; j < headerCells.length; j++) {
-      html += `<td class="px-3 py-2 text-slate-300 border border-slate-700">${cells[j] || ''}</td>`;
+      html += `<td class="px-3 py-2 text-slate-300 light:text-slate-700 border border-slate-700 light:border-slate-300">${cells[j] || ''}</td>`;
     }
     html += '</tr>';
   }

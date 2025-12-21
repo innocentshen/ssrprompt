@@ -27,7 +27,7 @@ interface ProviderFormProps {
   onDelete: () => Promise<void>;
   onAddModel: (modelId: string, name: string) => Promise<void>;
   onRemoveModel: (modelId: string) => Promise<void>;
-  onTestConnection: () => Promise<boolean>;
+  onTestConnection: (apiKey: string, baseUrl: string, type: ProviderType) => Promise<boolean>;
 }
 
 const providerTypes = [
@@ -101,7 +101,8 @@ export function ProviderForm({
     setTesting(true);
     setTestResult(null);
     try {
-      const success = await onTestConnection();
+      const effectiveBaseUrl = baseUrl || defaultBaseUrls[type];
+      const success = await onTestConnection(apiKey, effectiveBaseUrl, type);
       setTestResult(success ? 'success' : 'error');
     } catch {
       setTestResult('error');
@@ -411,7 +412,7 @@ export function ProviderForm({
           />
 
           <div className="flex items-center justify-between">
-            <p className="text-sm text-slate-400">
+            <p className="text-sm text-slate-400 light:text-slate-600">
               {modelFilter
                 ? `筛选到 ${fetchedModels.filter(m => m.id.toLowerCase().includes(modelFilter.toLowerCase()) || m.name.toLowerCase().includes(modelFilter.toLowerCase())).length} 个模型`
                 : `发现 ${fetchedModels.length} 个可用模型`}
@@ -440,31 +441,31 @@ export function ProviderForm({
             </div>
           </div>
 
-          <div className="max-h-80 overflow-y-auto border border-slate-700 rounded-lg divide-y divide-slate-700">
+          <div className="max-h-80 overflow-y-auto border border-slate-700 light:border-slate-300 rounded-lg divide-y divide-slate-700 light:divide-slate-200">
             {fetchedModels
               .filter(m => !modelFilter || m.id.toLowerCase().includes(modelFilter.toLowerCase()) || m.name.toLowerCase().includes(modelFilter.toLowerCase()))
               .map((model) => (
               <label
                 key={model.id}
-                className="flex items-center gap-3 px-4 py-3 hover:bg-slate-800/50 cursor-pointer transition-colors"
+                className="flex items-center gap-3 px-4 py-3 hover:bg-slate-800/50 light:hover:bg-slate-100 cursor-pointer transition-colors"
               >
                 <input
                   type="checkbox"
                   checked={selectedFetchedModels.has(model.id)}
                   onChange={() => toggleModelSelection(model.id)}
-                  className="w-4 h-4 rounded border-slate-600 bg-slate-800 text-cyan-500 focus:ring-cyan-500/50"
+                  className="w-4 h-4 rounded border-slate-600 light:border-slate-400 bg-slate-800 light:bg-white text-cyan-500 focus:ring-cyan-500/50"
                 />
                 <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium text-slate-200 truncate">{model.name}</p>
-                  <p className="text-xs text-slate-500 truncate">{model.id}</p>
+                  <p className="text-sm font-medium text-slate-200 light:text-slate-800 truncate">{model.name}</p>
+                  <p className="text-xs text-slate-500 light:text-slate-500 truncate">{model.id}</p>
                 </div>
                 {model.owned_by && (
-                  <span className="text-xs text-slate-600">{model.owned_by}</span>
+                  <span className="text-xs text-slate-600 light:text-slate-500">{model.owned_by}</span>
                 )}
               </label>
             ))}
             {fetchedModels.filter(m => !modelFilter || m.id.toLowerCase().includes(modelFilter.toLowerCase()) || m.name.toLowerCase().includes(modelFilter.toLowerCase())).length === 0 && (
-              <div className="p-4 text-center text-sm text-slate-500">
+              <div className="p-4 text-center text-sm text-slate-500 light:text-slate-600">
                 没有匹配的模型
               </div>
             )}

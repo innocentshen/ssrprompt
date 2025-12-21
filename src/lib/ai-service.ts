@@ -13,6 +13,19 @@ interface AIResponse {
   latencyMs: number;
 }
 
+export interface ModelParameters {
+  temperature?: number;
+  top_p?: number;
+  max_tokens?: number;
+  frequency_penalty?: number;
+  presence_penalty?: number;
+}
+
+export interface AICallOptions {
+  responseFormat?: object;
+  parameters?: ModelParameters;
+}
+
 export async function fileToBase64(file: File): Promise<FileAttachment> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -43,7 +56,8 @@ export async function callAIModel(
   modelName: string,
   prompt: string,
   userInput?: string,
-  files?: FileAttachment[]
+  files?: FileAttachment[],
+  options?: AICallOptions
 ): Promise<AIResponse> {
   if (!provider.api_key) {
     throw new Error('API Key 未配置');
@@ -53,15 +67,15 @@ export async function callAIModel(
 
   switch (provider.type) {
     case 'openai':
-      return await callOpenAI(provider, modelName, fullPrompt, files);
+      return await callOpenAI(provider, modelName, fullPrompt, files, options);
     case 'anthropic':
-      return await callAnthropic(provider, modelName, fullPrompt, files);
+      return await callAnthropic(provider, modelName, fullPrompt, files, options);
     case 'gemini':
-      return await callGemini(provider, modelName, fullPrompt, files);
+      return await callGemini(provider, modelName, fullPrompt, files, options);
     case 'azure':
-      return await callAzureOpenAI(provider, modelName, fullPrompt, files);
+      return await callAzureOpenAI(provider, modelName, fullPrompt, files, options);
     case 'custom':
-      return await callCustom(provider, modelName, fullPrompt, files);
+      return await callCustom(provider, modelName, fullPrompt, files, options);
     default:
       throw new Error(`不支持的服务商类型: ${provider.type}`);
   }
@@ -107,10 +121,38 @@ async function callOpenAI(
   provider: Provider,
   modelName: string,
   prompt: string,
-  files?: FileAttachment[]
+  files?: FileAttachment[],
+  options?: AICallOptions
 ): Promise<AIResponse> {
   const startTime = Date.now();
   const baseUrl = provider.base_url || 'https://api.openai.com';
+  const params = options?.parameters || {};
+
+  const requestBody: Record<string, unknown> = {
+    model: modelName,
+    messages: [
+      {
+        role: 'user',
+        content: buildOpenAIContent(prompt, files),
+      },
+    ],
+    temperature: params.temperature ?? 0.7,
+    max_tokens: params.max_tokens ?? 4096,
+  };
+
+  if (params.top_p !== undefined) {
+    requestBody.top_p = params.top_p;
+  }
+  if (params.frequency_penalty !== undefined) {
+    requestBody.frequency_penalty = params.frequency_penalty;
+  }
+  if (params.presence_penalty !== undefined) {
+    requestBody.presence_penalty = params.presence_penalty;
+  }
+
+  if (options?.responseFormat) {
+    requestBody.response_format = options.responseFormat;
+  }
 
   const response = await fetch(`${baseUrl}/v1/chat/completions`, {
     method: 'POST',
@@ -118,17 +160,7 @@ async function callOpenAI(
       'Content-Type': 'application/json',
       'Authorization': `Bearer ${provider.api_key}`,
     },
-    body: JSON.stringify({
-      model: modelName,
-      messages: [
-        {
-          role: 'user',
-          content: buildOpenAIContent(prompt, files),
-        },
-      ],
-      temperature: 0.7,
-      max_tokens: 4096,
-    }),
+    body: JSON.stringify(requestBody),
   });
 
   if (!response.ok) {
@@ -180,10 +212,30 @@ async function callAnthropic(
   provider: Provider,
   modelName: string,
   prompt: string,
-  files?: FileAttachment[]
+  files?: FileAttachment[],
+  options?: AICallOptions
 ): Promise<AIResponse> {
   const startTime = Date.now();
   const baseUrl = provider.base_url || 'https://api.anthropic.com';
+  const params = options?.parameters || {};
+
+  const requestBody: Record<string, unknown> = {
+    model: modelName,
+    max_tokens: params.max_tokens ?? 4096,
+    messages: [
+      {
+        role: 'user',
+        content: buildAnthropicContent(prompt, files),
+      },
+    ],
+  };
+
+  if (params.temperature !== undefined) {
+    requestBody.temperature = params.temperature;
+  }
+  if (params.top_p !== undefined) {
+    requestBody.top_p = params.top_p;
+  }
 
   const response = await fetch(`${baseUrl}/v1/messages`, {
     method: 'POST',
@@ -192,16 +244,7 @@ async function callAnthropic(
       'x-api-key': provider.api_key!,
       'anthropic-version': '2023-06-01',
     },
-    body: JSON.stringify({
-      model: modelName,
-      max_tokens: 4096,
-      messages: [
-        {
-          role: 'user',
-          content: buildAnthropicContent(prompt, files),
-        },
-      ],
-    }),
+    body: JSON.stringify(requestBody),
   });
 
   if (!response.ok) {
@@ -245,10 +288,38 @@ async function callGemini(
   provider: Provider,
   modelName: string,
   prompt: string,
-  files?: FileAttachment[]
+  files?: FileAttachment[],
+  options?: AICallOptions
 ): Promise<AIResponse> {
   const startTime = Date.now();
   const baseUrl = provider.base_url || 'https://generativelanguage.googleapis.com';
+  const params = options?.parameters || {};
+
+  const generationConfig: Record<string, unknown> = {
+    temperature: params.temperature ?? 0.7,
+    maxOutputTokens: params.max_tokens ?? 8192,
+  };
+
+  if (params.top_p !== undefined) {
+    generationConfig.topP = params.top_p;
+  }
+
+  const requestBody: Record<string, unknown> = {
+    contents: [
+      {
+        parts: buildGeminiParts(prompt, files),
+      },
+    ],
+    generationConfig,
+  };
+
+  if (options?.responseFormat) {
+    (requestBody.generationConfig as Record<string, unknown>).responseMimeType = 'application/json';
+    const responseSchema = (options.responseFormat as { json_schema?: { schema?: object } })?.json_schema?.schema;
+    if (responseSchema) {
+      (requestBody.generationConfig as Record<string, unknown>).responseSchema = responseSchema;
+    }
+  }
 
   const response = await fetch(
     `${baseUrl}/v1beta/models/${modelName}:generateContent?key=${provider.api_key}`,
@@ -257,17 +328,7 @@ async function callGemini(
       headers: {
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({
-        contents: [
-          {
-            parts: buildGeminiParts(prompt, files),
-          },
-        ],
-        generationConfig: {
-          temperature: 0.7,
-          maxOutputTokens: 8192,
-        },
-      }),
+      body: JSON.stringify(requestBody),
     }
   );
 
@@ -295,12 +356,40 @@ async function callAzureOpenAI(
   provider: Provider,
   modelName: string,
   prompt: string,
-  files?: FileAttachment[]
+  files?: FileAttachment[],
+  options?: AICallOptions
 ): Promise<AIResponse> {
   const startTime = Date.now();
 
   if (!provider.base_url) {
     throw new Error('Azure OpenAI 需要配置 Base URL');
+  }
+
+  const params = options?.parameters || {};
+
+  const requestBody: Record<string, unknown> = {
+    messages: [
+      {
+        role: 'user',
+        content: buildOpenAIContent(prompt, files),
+      },
+    ],
+    temperature: params.temperature ?? 0.7,
+    max_tokens: params.max_tokens ?? 4096,
+  };
+
+  if (params.top_p !== undefined) {
+    requestBody.top_p = params.top_p;
+  }
+  if (params.frequency_penalty !== undefined) {
+    requestBody.frequency_penalty = params.frequency_penalty;
+  }
+  if (params.presence_penalty !== undefined) {
+    requestBody.presence_penalty = params.presence_penalty;
+  }
+
+  if (options?.responseFormat) {
+    requestBody.response_format = options.responseFormat;
   }
 
   const response = await fetch(`${provider.base_url}/openai/deployments/${modelName}/chat/completions?api-version=2024-02-15-preview`, {
@@ -309,16 +398,7 @@ async function callAzureOpenAI(
       'Content-Type': 'application/json',
       'api-key': provider.api_key!,
     },
-    body: JSON.stringify({
-      messages: [
-        {
-          role: 'user',
-          content: buildOpenAIContent(prompt, files),
-        },
-      ],
-      temperature: 0.7,
-      max_tokens: 4096,
-    }),
+    body: JSON.stringify(requestBody),
   });
 
   if (!response.ok) {
@@ -341,12 +421,41 @@ async function callCustom(
   provider: Provider,
   modelName: string,
   prompt: string,
-  files?: FileAttachment[]
+  files?: FileAttachment[],
+  options?: AICallOptions
 ): Promise<AIResponse> {
   const startTime = Date.now();
 
   if (!provider.base_url) {
     throw new Error('自定义服务商需要配置 Base URL');
+  }
+
+  const params = options?.parameters || {};
+
+  const requestBody: Record<string, unknown> = {
+    model: modelName,
+    messages: [
+      {
+        role: 'user',
+        content: buildOpenAIContent(prompt, files),
+      },
+    ],
+    temperature: params.temperature ?? 0.7,
+    max_tokens: params.max_tokens ?? 4096,
+  };
+
+  if (params.top_p !== undefined) {
+    requestBody.top_p = params.top_p;
+  }
+  if (params.frequency_penalty !== undefined) {
+    requestBody.frequency_penalty = params.frequency_penalty;
+  }
+  if (params.presence_penalty !== undefined) {
+    requestBody.presence_penalty = params.presence_penalty;
+  }
+
+  if (options?.responseFormat) {
+    requestBody.response_format = options.responseFormat;
   }
 
   const response = await fetch(`${provider.base_url}/v1/chat/completions`, {
@@ -355,17 +464,7 @@ async function callCustom(
       'Content-Type': 'application/json',
       'Authorization': `Bearer ${provider.api_key}`,
     },
-    body: JSON.stringify({
-      model: modelName,
-      messages: [
-        {
-          role: 'user',
-          content: buildOpenAIContent(prompt, files),
-        },
-      ],
-      temperature: 0.7,
-      max_tokens: 4096,
-    }),
+    body: JSON.stringify(requestBody),
   });
 
   if (!response.ok) {

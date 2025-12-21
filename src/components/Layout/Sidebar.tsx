@@ -17,7 +17,7 @@ interface SidebarProps {
 const navItems = [
   { id: 'prompts', name: 'Prompt 开发', icon: FileText },
   { id: 'evaluation', name: '评测中心', icon: BarChart3 },
-  { id: 'traces', name: '观测', icon: Eye },
+  { id: 'traces', name: '历史记录', icon: Eye },
   { id: 'settings', name: '设置', icon: Settings },
 ];
 

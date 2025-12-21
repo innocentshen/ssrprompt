@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
-import { Trash2, Paperclip, X, FileText, Image, Check, Loader2, Eye, EyeOff } from 'lucide-react';
-import { Button, MarkdownRenderer } from '../ui';
+import { Trash2, Paperclip, X, FileText, Image, Check, Loader2, Eye, EyeOff, Maximize2 } from 'lucide-react';
+import { Button, Modal, MarkdownRenderer } from '../ui';
 import type { TestCase, FileAttachmentData } from '../../types';
 
 interface TestCaseEditorProps {
@@ -79,6 +79,9 @@ export function TestCaseEditor({
   const [localSaving, setLocalSaving] = useState(false);
   const [previewInput, setPreviewInput] = useState(false);
   const [previewExpected, setPreviewExpected] = useState(false);
+  const [expandedField, setExpandedField] = useState<'input' | 'expected' | null>(null);
+  const [expandedValue, setExpandedValue] = useState('');
+  const [expandedPreview, setExpandedPreview] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleUpdate = async (updates: Partial<TestCase>) => {
@@ -144,6 +147,23 @@ export function TestCaseEditor({
     return FileText;
   };
 
+  const openExpandModal = (field: 'input' | 'expected') => {
+    setExpandedField(field);
+    setExpandedValue(field === 'input' ? testCase.input_text : (testCase.expected_output || ''));
+    setExpandedPreview(false);
+  };
+
+  const closeExpandModal = async () => {
+    if (expandedField === 'input') {
+      await handleUpdate({ input_text: expandedValue });
+    } else if (expandedField === 'expected') {
+      await handleUpdate({ expected_output: expandedValue || null });
+    }
+    setExpandedField(null);
+    setExpandedValue('');
+    setExpandedPreview(false);
+  };
+
   const showSaving = isSaving || localSaving;
 
   return (
@@ -207,18 +227,28 @@ export function TestCaseEditor({
               <label className="block text-sm font-medium text-slate-300 light:text-slate-700">
                 输入文本
               </label>
-              <button
-                type="button"
-                onClick={() => setPreviewInput(!previewInput)}
-                className={`flex items-center gap-1 text-xs px-2 py-1 rounded transition-colors ${
-                  previewInput
-                    ? 'bg-cyan-500/20 text-cyan-400 light:text-cyan-600'
-                    : 'bg-slate-700 light:bg-slate-200 text-slate-400 light:text-slate-600 hover:text-slate-300 light:hover:text-slate-800'
-                }`}
-              >
-                {previewInput ? <EyeOff className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
-                {previewInput ? '编辑' : '预览'}
-              </button>
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => openExpandModal('input')}
+                  className="flex items-center gap-1 text-xs px-2 py-1 rounded transition-colors bg-slate-700 light:bg-slate-200 text-slate-400 light:text-slate-600 hover:text-slate-300 light:hover:text-slate-800"
+                  title="放大编辑"
+                >
+                  <Maximize2 className="w-3 h-3" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPreviewInput(!previewInput)}
+                  className={`flex items-center gap-1 text-xs px-2 py-1 rounded transition-colors ${
+                    previewInput
+                      ? 'bg-cyan-500/20 text-cyan-400 light:text-cyan-600'
+                      : 'bg-slate-700 light:bg-slate-200 text-slate-400 light:text-slate-600 hover:text-slate-300 light:hover:text-slate-800'
+                  }`}
+                >
+                  {previewInput ? <EyeOff className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
+                  {previewInput ? '编辑' : '预览'}
+                </button>
+              </div>
             </div>
             {previewInput ? (
               <div className="w-full min-h-[80px] px-3 py-2 bg-slate-800 light:bg-slate-50 border border-slate-600 light:border-slate-300 rounded-lg text-sm overflow-auto max-h-48">
@@ -235,7 +265,7 @@ export function TestCaseEditor({
                 onChange={(value) => handleUpdate({ input_text: value })}
                 placeholder="输入要测试的文本内容..."
                 rows={3}
-                className="w-full px-3 py-2 bg-slate-800 light:bg-white border border-slate-600 light:border-slate-300 rounded-lg text-slate-200 light:text-slate-800 placeholder-slate-500 light:placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-cyan-500/50 focus:border-cyan-500 resize-none text-sm font-mono"
+                className="w-full px-3 py-2 bg-slate-800 light:bg-white border border-slate-600 light:border-slate-300 rounded-lg text-slate-200 light:text-slate-800 placeholder-slate-500 light:placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-cyan-500/50 focus:border-cyan-500 resize-y text-sm font-mono min-h-[80px]"
               />
             )}
           </div>
@@ -312,18 +342,28 @@ export function TestCaseEditor({
               <label className="block text-sm font-medium text-slate-300 light:text-slate-700">
                 期望输出 (可选)
               </label>
-              <button
-                type="button"
-                onClick={() => setPreviewExpected(!previewExpected)}
-                className={`flex items-center gap-1 text-xs px-2 py-1 rounded transition-colors ${
-                  previewExpected
-                    ? 'bg-cyan-500/20 text-cyan-400 light:text-cyan-600'
-                    : 'bg-slate-700 light:bg-slate-200 text-slate-400 light:text-slate-600 hover:text-slate-300 light:hover:text-slate-800'
-                }`}
-              >
-                {previewExpected ? <EyeOff className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
-                {previewExpected ? '编辑' : '预览'}
-              </button>
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => openExpandModal('expected')}
+                  className="flex items-center gap-1 text-xs px-2 py-1 rounded transition-colors bg-slate-700 light:bg-slate-200 text-slate-400 light:text-slate-600 hover:text-slate-300 light:hover:text-slate-800"
+                  title="放大编辑"
+                >
+                  <Maximize2 className="w-3 h-3" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPreviewExpected(!previewExpected)}
+                  className={`flex items-center gap-1 text-xs px-2 py-1 rounded transition-colors ${
+                    previewExpected
+                      ? 'bg-cyan-500/20 text-cyan-400 light:text-cyan-600'
+                      : 'bg-slate-700 light:bg-slate-200 text-slate-400 light:text-slate-600 hover:text-slate-300 light:hover:text-slate-800'
+                  }`}
+                >
+                  {previewExpected ? <EyeOff className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
+                  {previewExpected ? '编辑' : '预览'}
+                </button>
+              </div>
             </div>
             {previewExpected ? (
               <div className="w-full min-h-[56px] px-3 py-2 bg-slate-800 light:bg-slate-50 border border-slate-600 light:border-slate-300 rounded-lg text-sm overflow-auto max-h-48">
@@ -340,7 +380,7 @@ export function TestCaseEditor({
                 onChange={(value) => handleUpdate({ expected_output: value || null })}
                 placeholder="期望的模型输出，用于对比评估..."
                 rows={2}
-                className="w-full px-3 py-2 bg-slate-800 light:bg-white border border-slate-600 light:border-slate-300 rounded-lg text-slate-200 light:text-slate-800 placeholder-slate-500 light:placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-cyan-500/50 focus:border-cyan-500 resize-none text-sm font-mono"
+                className="w-full px-3 py-2 bg-slate-800 light:bg-white border border-slate-600 light:border-slate-300 rounded-lg text-slate-200 light:text-slate-800 placeholder-slate-500 light:placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-cyan-500/50 focus:border-cyan-500 resize-y text-sm font-mono min-h-[56px]"
               />
             )}
           </div>
@@ -351,6 +391,55 @@ export function TestCaseEditor({
           </p>
         </div>
       )}
+
+      {/* Expand Modal */}
+      <Modal
+        isOpen={!!expandedField}
+        onClose={closeExpandModal}
+        title={expandedField === 'input' ? '编辑输入文本' : '编辑期望输出'}
+        size="xl"
+      >
+        <div className="space-y-4">
+          <div className="flex items-center justify-end">
+            <button
+              type="button"
+              onClick={() => setExpandedPreview(!expandedPreview)}
+              className={`flex items-center gap-1 text-xs px-3 py-1.5 rounded transition-colors ${
+                expandedPreview
+                  ? 'bg-cyan-500/20 text-cyan-400 light:text-cyan-600'
+                  : 'bg-slate-700 light:bg-slate-200 text-slate-400 light:text-slate-600 hover:text-slate-300 light:hover:text-slate-800'
+              }`}
+            >
+              {expandedPreview ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+              {expandedPreview ? '编辑' : '预览'}
+            </button>
+          </div>
+          {expandedPreview ? (
+            <div className="w-full h-[60vh] px-4 py-3 bg-slate-800 light:bg-slate-50 border border-slate-600 light:border-slate-300 rounded-lg overflow-auto">
+              {expandedValue ? (
+                <MarkdownRenderer content={expandedValue} />
+              ) : (
+                <span className="text-slate-500 light:text-slate-400">无内容</span>
+              )}
+            </div>
+          ) : (
+            <textarea
+              value={expandedValue}
+              onChange={(e) => setExpandedValue(e.target.value)}
+              placeholder={expandedField === 'input' ? '输入要测试的文本内容...' : '期望的模型输出，用于对比评估...'}
+              className="w-full h-[60vh] px-4 py-3 bg-slate-800 light:bg-white border border-slate-600 light:border-slate-300 rounded-lg text-slate-200 light:text-slate-800 placeholder-slate-500 light:placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-cyan-500/50 focus:border-cyan-500 resize-none text-sm font-mono"
+            />
+          )}
+          <div className="flex justify-end gap-3">
+            <Button variant="ghost" onClick={() => { setExpandedField(null); setExpandedValue(''); setExpandedPreview(false); }}>
+              取消
+            </Button>
+            <Button onClick={closeExpandModal}>
+              保存
+            </Button>
+          </div>
+        </div>
+      </Modal>
     </div>
   );
 }

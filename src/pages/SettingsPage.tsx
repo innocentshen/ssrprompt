@@ -1,14 +1,15 @@
 import { useState, useEffect } from 'react';
-import { Bot, Database } from 'lucide-react';
+import { Bot, Database, Sparkles } from 'lucide-react';
 import { ProviderList } from '../components/Settings/ProviderList';
 import { ProviderForm } from '../components/Settings/ProviderForm';
 import { AddProviderModal } from '../components/Settings/AddProviderModal';
 import { DatabaseSettings } from '../components/Settings/DatabaseSettings';
+import { OptimizationSettings } from '../components/Settings/OptimizationSettings';
 import { useToast } from '../components/ui';
 import { getDatabase } from '../lib/database';
 import type { Provider, Model, ProviderType } from '../types';
 
-type SettingsTab = 'providers' | 'database';
+type SettingsTab = 'providers' | 'database' | 'optimization';
 
 export function SettingsPage() {
   const { showToast } = useToast();
@@ -17,6 +18,7 @@ export function SettingsPage() {
   const [models, setModels] = useState<Model[]>([]);
   const [selectedProviderId, setSelectedProviderId] = useState<string | null>(null);
   const [showAddModal, setShowAddModal] = useState(false);
+  const [loading, setLoading] = useState(false);
 
   const selectedProvider = providers.find((p) => p.id === selectedProviderId) || null;
   const selectedModels = models.filter((m) => m.provider_id === selectedProviderId);
@@ -175,10 +177,7 @@ export function SettingsPage() {
     }
   };
 
-  const handleTestConnection = async (): Promise<boolean> => {
-    if (!selectedProvider) return false;
-
-    const apiKey = selectedProvider.api_key;
+  const handleTestConnection = async (apiKey: string, baseUrl: string, type: ProviderType): Promise<boolean> => {
     if (!apiKey) {
       showToast('error', '请先填写 API Key');
       return false;
@@ -196,8 +195,8 @@ export function SettingsPage() {
   };
 
   return (
-    <div className="h-full flex flex-col bg-slate-950 light:bg-slate-50">
-      <div className="flex border-b border-slate-800 light:border-slate-200 px-6">
+    <div className="h-full flex flex-col overflow-hidden bg-slate-950 light:bg-slate-50">
+      <div className="flex-shrink-0 flex border-b border-slate-800 light:border-slate-200 px-6">
         <button
           onClick={() => setActiveTab('providers')}
           className={`flex items-center gap-2 px-4 py-3 text-sm font-medium border-b-2 transition-colors ${
@@ -220,10 +219,21 @@ export function SettingsPage() {
           <Database className="w-4 h-4" />
           数据库
         </button>
+        <button
+          onClick={() => setActiveTab('optimization')}
+          className={`flex items-center gap-2 px-4 py-3 text-sm font-medium border-b-2 transition-colors ${
+            activeTab === 'optimization'
+              ? 'border-cyan-500 text-cyan-400 light:text-cyan-600'
+              : 'border-transparent text-slate-500 light:text-slate-600 hover:text-slate-300 light:hover:text-slate-800'
+          }`}
+        >
+          <Sparkles className="w-4 h-4" />
+          智能优化
+        </button>
       </div>
 
       {activeTab === 'providers' ? (
-        <div className="flex-1 flex">
+        <div className="flex-1 flex overflow-hidden">
           <ProviderList
             providers={providers}
             selectedId={selectedProviderId}
@@ -245,13 +255,19 @@ export function SettingsPage() {
             onAdd={handleAddProvider}
           />
         </div>
-      ) : (
-        <div className="flex-1 overflow-auto p-6">
+      ) : activeTab === 'database' ? (
+        <div className="flex-1 overflow-y-auto p-6">
           <div className="max-w-2xl">
             <DatabaseSettings />
           </div>
         </div>
-      )}
+      ) : activeTab === 'optimization' ? (
+        <div className="flex-1 overflow-y-auto p-6">
+          <div className="max-w-3xl">
+            <OptimizationSettings />
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

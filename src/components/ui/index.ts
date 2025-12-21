@@ -6,3 +6,6 @@ export { Modal } from './Modal';
 export { Badge } from './Badge';
 export { ToastProvider, useToast } from './Toast';
 export { MarkdownRenderer } from './MarkdownRenderer';
+export { Slider } from './Slider';
+export { Tabs } from './Tabs';
+export { Collapsible } from './Collapsible';

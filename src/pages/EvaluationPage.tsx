@@ -814,9 +814,9 @@ export function EvaluationPage() {
   const promptVariables = (selectedPrompt?.variables as PromptVariable[] | undefined)?.map((v) => v.name) || [];
 
   return (
-    <div className="h-full flex bg-slate-950 light:bg-slate-50">
-      <div className="w-80 bg-slate-900/50 light:bg-white border-r border-slate-700 light:border-slate-200 flex flex-col">
-        <div className="p-4 border-b border-slate-700 light:border-slate-200">
+    <div className="h-full flex overflow-hidden bg-slate-950 light:bg-slate-50">
+      <div className="w-80 bg-slate-900/50 light:bg-white border-r border-slate-700 light:border-slate-200 flex flex-col overflow-hidden">
+        <div className="p-4 border-b border-slate-700 light:border-slate-200 flex-shrink-0">
           <Button className="w-full" onClick={() => setShowNewEval(true)}>
             <Plus className="w-4 h-4" />
             <span>新建评测</span>
@@ -856,258 +856,264 @@ export function EvaluationPage() {
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto">
+      <div className="flex-1 flex flex-col overflow-hidden">
         {selectedEvaluation ? (
-          <div className="p-6 space-y-6 max-w-5xl mx-auto">
-            <div className="flex items-center justify-between">
-              <div className="flex-1">
-                {isEditingName ? (
-                  <div className="flex items-center gap-2">
-                    <Input
-                      value={editingName}
-                      onChange={(e) => setEditingName(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') saveEvaluationName();
-                        if (e.key === 'Escape') cancelEditingName();
-                      }}
-                      className="max-w-md"
-                      autoFocus
-                    />
-                    <Button size="sm" onClick={saveEvaluationName}>
-                      <Check className="w-4 h-4" />
-                    </Button>
-                    <Button size="sm" variant="ghost" onClick={cancelEditingName}>
-                      <X className="w-4 h-4" />
-                    </Button>
-                  </div>
-                ) : (
-                  <div className="flex items-center gap-2">
-                    <h2 className="text-xl font-semibold text-white light:text-slate-900">
-                      {selectedEvaluation.name}
-                    </h2>
-                    <button
-                      onClick={startEditingName}
-                      className="p-1 hover:bg-slate-700 light:hover:bg-slate-200 rounded transition-colors"
-                    >
-                      <Pencil className="w-4 h-4 text-slate-400 light:text-slate-500" />
-                    </button>
-                  </div>
-                )}
-                <p className="text-sm text-slate-500 light:text-slate-400 mt-1">
-                  创建于 {new Date(selectedEvaluation.created_at).toLocaleString('zh-CN')}
-                </p>
-              </div>
-              <div className="flex items-center gap-2">
-                <Button onClick={runEvaluation}>
-                  {runningCount > 0 ? (
-                    <Loader2 className="w-4 h-4 animate-spin" />
+          <>
+            {/* Header - fixed */}
+            <div className="flex-shrink-0 p-6 pb-0 space-y-6">
+              <div className="flex items-center justify-between">
+                <div className="flex-1">
+                  {isEditingName ? (
+                    <div className="flex items-center gap-2">
+                      <Input
+                        value={editingName}
+                        onChange={(e) => setEditingName(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') saveEvaluationName();
+                          if (e.key === 'Escape') cancelEditingName();
+                        }}
+                        className="max-w-md"
+                        autoFocus
+                      />
+                      <Button size="sm" onClick={saveEvaluationName}>
+                        <Check className="w-4 h-4" />
+                      </Button>
+                      <Button size="sm" variant="ghost" onClick={cancelEditingName}>
+                        <X className="w-4 h-4" />
+                      </Button>
+                    </div>
                   ) : (
-                    <Play className="w-4 h-4" />
+                    <div className="flex items-center gap-2">
+                      <h2 className="text-xl font-semibold text-white light:text-slate-900">
+                        {selectedEvaluation.name}
+                      </h2>
+                      <button
+                        onClick={startEditingName}
+                        className="p-1 hover:bg-slate-700 light:hover:bg-slate-200 rounded transition-colors"
+                      >
+                        <Pencil className="w-4 h-4 text-slate-400 light:text-slate-500" />
+                      </button>
+                    </div>
                   )}
-                  <span>运行评测</span>
-                  {runningCount > 0 && (
-                    <span className="ml-1 px-1.5 py-0.5 text-xs bg-cyan-500/20 text-cyan-400 rounded">
-                      {runningCount}
-                    </span>
+                  <p className="text-sm text-slate-500 light:text-slate-400 mt-1">
+                    创建于 {new Date(selectedEvaluation.created_at).toLocaleString('zh-CN')}
+                  </p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Button onClick={runEvaluation}>
+                    {runningCount > 0 ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <Play className="w-4 h-4" />
+                    )}
+                    <span>运行评测</span>
+                    {runningCount > 0 && (
+                      <span className="ml-1 px-1.5 py-0.5 text-xs bg-cyan-500/20 text-cyan-400 rounded">
+                        {runningCount}
+                      </span>
+                    )}
+                  </Button>
+                  <Button variant="ghost" onClick={handleCopyEvaluation}>
+                    <Copy className="w-4 h-4" />
+                  </Button>
+                  <Button variant="ghost" onClick={handleDeleteEvaluation}>
+                    <Trash2 className="w-4 h-4" />
+                  </Button>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-5 gap-4">
+                <div className="p-4 bg-slate-800/50 light:bg-white border border-slate-700 light:border-slate-200 rounded-lg light:shadow-sm">
+                  <p className="text-xs text-slate-500 light:text-slate-600 mb-2">关联 Prompt</p>
+                  <Select
+                    value={selectedEvaluation.prompt_id || ''}
+                    onChange={(e) => handleUpdateEvaluation('prompt_id', e.target.value || null)}
+                    options={[
+                      { value: '', label: '不关联 Prompt' },
+                      ...prompts.map((p) => ({ value: p.id, label: `${p.name} (v${p.current_version})` })),
+                    ]}
+                  />
+                  {selectedPrompt && (
+                    <p className="text-xs text-cyan-400 light:text-cyan-600 mt-2">
+                      当前使用版本: v{selectedPrompt.current_version}
+                    </p>
                   )}
-                </Button>
-                <Button variant="ghost" onClick={handleCopyEvaluation}>
-                  <Copy className="w-4 h-4" />
-                </Button>
-                <Button variant="ghost" onClick={handleDeleteEvaluation}>
-                  <Trash2 className="w-4 h-4" />
-                </Button>
+                </div>
+                <div className="p-4 bg-slate-800/50 light:bg-white border border-slate-700 light:border-slate-200 rounded-lg light:shadow-sm">
+                  <p className="text-xs text-slate-500 light:text-slate-600 mb-2">被测模型</p>
+                  <Select
+                    value={selectedEvaluation.model_id || ''}
+                    onChange={(e) => handleUpdateEvaluation('model_id', e.target.value || null)}
+                    options={[
+                      { value: '', label: '选择模型' },
+                      ...enabledModels.map((m) => ({ value: m.id, label: m.name })),
+                    ]}
+                  />
+                </div>
+                <div className="p-4 bg-slate-800/50 light:bg-white border border-slate-700 light:border-slate-200 rounded-lg light:shadow-sm">
+                  <p className="text-xs text-slate-500 light:text-slate-600 mb-2">评价模型 (Judge)</p>
+                  <Select
+                    value={selectedEvaluation.judge_model_id || ''}
+                    onChange={(e) => handleUpdateEvaluation('judge_model_id', e.target.value || null)}
+                    options={[
+                      { value: '', label: '不使用AI评价' },
+                      ...enabledModels.map((m) => ({ value: m.id, label: m.name })),
+                    ]}
+                  />
+                </div>
+                <div className="p-4 bg-slate-800/50 light:bg-white border border-slate-700 light:border-slate-200 rounded-lg light:shadow-sm">
+                  <p className="text-xs text-slate-500 light:text-slate-600 mb-2">通过阈值</p>
+                  <Select
+                    value={String((selectedEvaluation.config.pass_threshold || 0.6) * 10)}
+                    onChange={(e) => handleUpdateConfig('pass_threshold', Number(e.target.value) / 10)}
+                    options={[
+                      { value: '10', label: '10分 (满分通过)' },
+                      { value: '9', label: '9分以上' },
+                      { value: '8', label: '8分以上' },
+                      { value: '7', label: '7分以上' },
+                      { value: '6', label: '6分以上 (默认)' },
+                      { value: '5', label: '5分以上' },
+                      { value: '4', label: '4分以上' },
+                      { value: '3', label: '3分以上' },
+                      { value: '0', label: '不限制' },
+                    ]}
+                  />
+                </div>
+                <div className="p-4 bg-slate-800/50 light:bg-white border border-slate-700 light:border-slate-200 rounded-lg light:shadow-sm">
+                  <p className="text-xs text-slate-500 light:text-slate-600 mb-1">状态</p>
+                  <Badge variant={statusConfig[selectedEvaluation.status].variant}>
+                    {statusConfig[selectedEvaluation.status].label}
+                  </Badge>
+                </div>
+              </div>
+
+              <div className="border-b border-slate-700 light:border-slate-200">
+                <nav className="flex gap-4">
+                  <button
+                    onClick={() => setActiveTab('testcases')}
+                    className={`pb-3 px-1 text-sm font-medium border-b-2 transition-colors flex items-center gap-2 ${
+                      activeTab === 'testcases'
+                        ? 'border-cyan-500 text-cyan-400 light:text-cyan-600'
+                        : 'border-transparent text-slate-500 light:text-slate-600 hover:text-slate-300 light:hover:text-slate-800'
+                    }`}
+                  >
+                    <FileText className="w-4 h-4" />
+                    测试用例 ({testCases.length})
+                  </button>
+                  <button
+                    onClick={() => setActiveTab('criteria')}
+                    className={`pb-3 px-1 text-sm font-medium border-b-2 transition-colors flex items-center gap-2 ${
+                      activeTab === 'criteria'
+                        ? 'border-cyan-500 text-cyan-400 light:text-cyan-600'
+                        : 'border-transparent text-slate-500 light:text-slate-600 hover:text-slate-300 light:hover:text-slate-800'
+                    }`}
+                  >
+                    <Settings2 className="w-4 h-4" />
+                    评价标准 ({criteria.filter((c) => c.enabled).length})
+                  </button>
+                  <button
+                    onClick={() => setActiveTab('history')}
+                    className={`pb-3 px-1 text-sm font-medium border-b-2 transition-colors flex items-center gap-2 ${
+                      activeTab === 'history'
+                        ? 'border-cyan-500 text-cyan-400 light:text-cyan-600'
+                        : 'border-transparent text-slate-500 light:text-slate-600 hover:text-slate-300 light:hover:text-slate-800'
+                    }`}
+                  >
+                    <History className="w-4 h-4" />
+                    执行历史 ({runs.length})
+                  </button>
+                  <button
+                    onClick={() => setActiveTab('results')}
+                    className={`pb-3 px-1 text-sm font-medium border-b-2 transition-colors flex items-center gap-2 ${
+                      activeTab === 'results'
+                        ? 'border-cyan-500 text-cyan-400 light:text-cyan-600'
+                        : 'border-transparent text-slate-500 light:text-slate-600 hover:text-slate-300 light:hover:text-slate-800'
+                    }`}
+                  >
+                    <BarChart3 className="w-4 h-4" />
+                    评测结果 ({results.length})
+                  </button>
+                </nav>
               </div>
             </div>
 
-            <div className="grid grid-cols-5 gap-4">
-              <div className="p-4 bg-slate-800/50 light:bg-white border border-slate-700 light:border-slate-200 rounded-lg light:shadow-sm">
-                <p className="text-xs text-slate-500 light:text-slate-600 mb-2">关联 Prompt</p>
-                <Select
-                  value={selectedEvaluation.prompt_id || ''}
-                  onChange={(e) => handleUpdateEvaluation('prompt_id', e.target.value || null)}
-                  options={[
-                    { value: '', label: '不关联 Prompt' },
-                    ...prompts.map((p) => ({ value: p.id, label: `${p.name} (v${p.current_version})` })),
-                  ]}
-                />
-                {selectedPrompt && (
-                  <p className="text-xs text-cyan-400 light:text-cyan-600 mt-2">
-                    当前使用版本: v{selectedPrompt.current_version}
-                  </p>
+            {/* Content - scrollable */}
+            <div className="flex-1 overflow-y-auto p-6 pt-4">
+              <div>
+                {activeTab === 'testcases' && (
+                  <TestCaseList
+                    testCases={testCases}
+                    variables={promptVariables}
+                    onAdd={handleAddTestCase}
+                    onUpdate={handleUpdateTestCase}
+                    onDelete={handleDeleteTestCase}
+                  />
+                )}
+
+                {activeTab === 'criteria' && (
+                  <CriteriaEditor
+                    criteria={criteria}
+                    onAdd={handleAddCriterion}
+                    onUpdate={handleUpdateCriterion}
+                    onDelete={handleDeleteCriterion}
+                  />
+                )}
+
+                {activeTab === 'history' && (
+                  <RunHistory
+                    runs={runs}
+                    selectedRunId={selectedRun?.id || null}
+                    onSelectRun={handleSelectRun}
+                    onStopRun={handleStopRun}
+                  />
+                )}
+
+                {activeTab === 'results' && (
+                  results.length > 0 && selectedRun ? (
+                    <div className="space-y-4">
+                      <div className="flex items-center justify-between p-3 bg-slate-800/30 light:bg-slate-100 border border-slate-700 light:border-slate-200 rounded-lg">
+                        <div className="flex items-center gap-3">
+                          <span className="text-sm text-slate-400 light:text-slate-600">当前查看:</span>
+                          <Badge variant={statusConfig[selectedRun.status].variant}>
+                            {new Date(selectedRun.started_at).toLocaleString('zh-CN')}
+                          </Badge>
+                        </div>
+                        {runs.length > 1 && (
+                          <button
+                            onClick={() => setActiveTab('history')}
+                            className="text-xs text-cyan-400 light:text-cyan-600 hover:text-cyan-300 light:hover:text-cyan-700 flex items-center gap-1"
+                          >
+                            <History className="w-3 h-3" />
+                            查看其他执行记录
+                          </button>
+                        )}
+                      </div>
+                      <EvaluationResultsView
+                        testCases={testCases}
+                        results={results}
+                        criteria={criteria}
+                        overallScores={selectedRun.results?.scores || {}}
+                        summary={selectedRun.results?.summary}
+                      />
+                    </div>
+                  ) : (
+                    <div className="flex items-center justify-center py-12 text-slate-500 light:text-slate-600">
+                      <div className="text-center">
+                        <AlertCircle className="w-12 h-12 mx-auto mb-3 text-slate-600 light:text-slate-400" />
+                        <p>暂无评测结果</p>
+                        <p className="text-xs mt-1">添加测试用例后点击"运行评测"</p>
+                      </div>
+                    </div>
+                  )
                 )}
               </div>
-              <div className="p-4 bg-slate-800/50 light:bg-white border border-slate-700 light:border-slate-200 rounded-lg light:shadow-sm">
-                <p className="text-xs text-slate-500 light:text-slate-600 mb-2">被测模型</p>
-                <Select
-                  value={selectedEvaluation.model_id || ''}
-                  onChange={(e) => handleUpdateEvaluation('model_id', e.target.value || null)}
-                  options={[
-                    { value: '', label: '选择模型' },
-                    ...enabledModels.map((m) => ({ value: m.id, label: m.name })),
-                  ]}
-                />
-              </div>
-              <div className="p-4 bg-slate-800/50 light:bg-white border border-slate-700 light:border-slate-200 rounded-lg light:shadow-sm">
-                <p className="text-xs text-slate-500 light:text-slate-600 mb-2">评价模型 (Judge)</p>
-                <Select
-                  value={selectedEvaluation.judge_model_id || ''}
-                  onChange={(e) => handleUpdateEvaluation('judge_model_id', e.target.value || null)}
-                  options={[
-                    { value: '', label: '不使用AI评价' },
-                    ...enabledModels.map((m) => ({ value: m.id, label: m.name })),
-                  ]}
-                />
-              </div>
-              <div className="p-4 bg-slate-800/50 light:bg-white border border-slate-700 light:border-slate-200 rounded-lg light:shadow-sm">
-                <p className="text-xs text-slate-500 light:text-slate-600 mb-2">通过阈值</p>
-                <Select
-                  value={String((selectedEvaluation.config.pass_threshold || 0.6) * 10)}
-                  onChange={(e) => handleUpdateConfig('pass_threshold', Number(e.target.value) / 10)}
-                  options={[
-                    { value: '10', label: '10分 (满分通过)' },
-                    { value: '9', label: '9分以上' },
-                    { value: '8', label: '8分以上' },
-                    { value: '7', label: '7分以上' },
-                    { value: '6', label: '6分以上 (默认)' },
-                    { value: '5', label: '5分以上' },
-                    { value: '4', label: '4分以上' },
-                    { value: '3', label: '3分以上' },
-                    { value: '0', label: '不限制' },
-                  ]}
-                />
-              </div>
-              <div className="p-4 bg-slate-800/50 light:bg-white border border-slate-700 light:border-slate-200 rounded-lg light:shadow-sm">
-                <p className="text-xs text-slate-500 light:text-slate-600 mb-1">状态</p>
-                <Badge variant={statusConfig[selectedEvaluation.status].variant}>
-                  {statusConfig[selectedEvaluation.status].label}
-                </Badge>
-              </div>
             </div>
-
-            <div className="border-b border-slate-700 light:border-slate-200">
-              <nav className="flex gap-4">
-                <button
-                  onClick={() => setActiveTab('testcases')}
-                  className={`pb-3 px-1 text-sm font-medium border-b-2 transition-colors flex items-center gap-2 ${
-                    activeTab === 'testcases'
-                      ? 'border-cyan-500 text-cyan-400 light:text-cyan-600'
-                      : 'border-transparent text-slate-500 light:text-slate-600 hover:text-slate-300 light:hover:text-slate-800'
-                  }`}
-                >
-                  <FileText className="w-4 h-4" />
-                  测试用例 ({testCases.length})
-                </button>
-                <button
-                  onClick={() => setActiveTab('criteria')}
-                  className={`pb-3 px-1 text-sm font-medium border-b-2 transition-colors flex items-center gap-2 ${
-                    activeTab === 'criteria'
-                      ? 'border-cyan-500 text-cyan-400 light:text-cyan-600'
-                      : 'border-transparent text-slate-500 light:text-slate-600 hover:text-slate-300 light:hover:text-slate-800'
-                  }`}
-                >
-                  <Settings2 className="w-4 h-4" />
-                  评价标准 ({criteria.filter((c) => c.enabled).length})
-                </button>
-                <button
-                  onClick={() => setActiveTab('history')}
-                  className={`pb-3 px-1 text-sm font-medium border-b-2 transition-colors flex items-center gap-2 ${
-                    activeTab === 'history'
-                      ? 'border-cyan-500 text-cyan-400 light:text-cyan-600'
-                      : 'border-transparent text-slate-500 light:text-slate-600 hover:text-slate-300 light:hover:text-slate-800'
-                  }`}
-                >
-                  <History className="w-4 h-4" />
-                  执行历史 ({runs.length})
-                </button>
-                <button
-                  onClick={() => setActiveTab('results')}
-                  className={`pb-3 px-1 text-sm font-medium border-b-2 transition-colors flex items-center gap-2 ${
-                    activeTab === 'results'
-                      ? 'border-cyan-500 text-cyan-400 light:text-cyan-600'
-                      : 'border-transparent text-slate-500 light:text-slate-600 hover:text-slate-300 light:hover:text-slate-800'
-                  }`}
-                >
-                  <BarChart3 className="w-4 h-4" />
-                  评测结果 ({results.length})
-                </button>
-              </nav>
-            </div>
-
-            <div className="min-h-[400px]">
-              {activeTab === 'testcases' && (
-                <TestCaseList
-                  testCases={testCases}
-                  variables={promptVariables}
-                  onAdd={handleAddTestCase}
-                  onUpdate={handleUpdateTestCase}
-                  onDelete={handleDeleteTestCase}
-                />
-              )}
-
-              {activeTab === 'criteria' && (
-                <CriteriaEditor
-                  criteria={criteria}
-                  onAdd={handleAddCriterion}
-                  onUpdate={handleUpdateCriterion}
-                  onDelete={handleDeleteCriterion}
-                />
-              )}
-
-              {activeTab === 'history' && (
-                <RunHistory
-                  runs={runs}
-                  selectedRunId={selectedRun?.id || null}
-                  onSelectRun={handleSelectRun}
-                  onStopRun={handleStopRun}
-                />
-              )}
-
-              {activeTab === 'results' && (
-                results.length > 0 && selectedRun ? (
-                  <div className="space-y-4">
-                    <div className="flex items-center justify-between p-3 bg-slate-800/30 border border-slate-700 rounded-lg">
-                      <div className="flex items-center gap-3">
-                        <span className="text-sm text-slate-400">当前查看:</span>
-                        <Badge variant={statusConfig[selectedRun.status].variant}>
-                          {new Date(selectedRun.started_at).toLocaleString('zh-CN')}
-                        </Badge>
-                      </div>
-                      {runs.length > 1 && (
-                        <button
-                          onClick={() => setActiveTab('history')}
-                          className="text-xs text-cyan-400 hover:text-cyan-300 flex items-center gap-1"
-                        >
-                          <History className="w-3 h-3" />
-                          查看其他执行记录
-                        </button>
-                      )}
-                    </div>
-                    <EvaluationResultsView
-                      testCases={testCases}
-                      results={results}
-                      criteria={criteria}
-                      overallScores={selectedRun.results?.scores || {}}
-                      summary={selectedRun.results?.summary}
-                    />
-                  </div>
-                ) : (
-                  <div className="flex items-center justify-center py-12 text-slate-500">
-                    <div className="text-center">
-                      <AlertCircle className="w-12 h-12 mx-auto mb-3 text-slate-600" />
-                      <p>暂无评测结果</p>
-                      <p className="text-xs mt-1">添加测试用例后点击"运行评测"</p>
-                    </div>
-                  </div>
-                )
-              )}
-            </div>
-          </div>
+          </>
         ) : (
           <div className="h-full flex items-center justify-center">
             <div className="text-center">
-              <BarChart3 className="w-16 h-16 mx-auto mb-4 text-slate-700" />
-              <p className="text-slate-500">选择一个评测任务查看详情</p>
+              <BarChart3 className="w-16 h-16 mx-auto mb-4 text-slate-700 light:text-slate-400" />
+              <p className="text-slate-500 light:text-slate-600">选择一个评测任务查看详情</p>
             </div>
           </div>
         )}
@@ -1149,10 +1155,10 @@ export function EvaluationPage() {
               ...enabledModels.map((m) => ({ value: m.id, label: m.name })),
             ]}
           />
-          <p className="text-xs text-slate-500">
+          <p className="text-xs text-slate-500 light:text-slate-600">
             评价模型用于对被测模型的输出进行AI打分和评价
           </p>
-          <div className="flex justify-end gap-3 pt-4 border-t border-slate-700">
+          <div className="flex justify-end gap-3 pt-4 border-t border-slate-700 light:border-slate-200">
             <Button variant="ghost" onClick={() => setShowNewEval(false)}>
               取消
             </Button>

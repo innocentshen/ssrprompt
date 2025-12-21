@@ -65,4 +65,67 @@
       opacity: 1;
     }
   }
+
+  /* Markdown渲染器亮色主题样式 */
+  html.light .markdown-content p {
+    @apply text-slate-700;
+  }
+
+  html.light .markdown-content h1,
+  html.light .markdown-content h2,
+  html.light .markdown-content h3 {
+    @apply text-slate-900;
+  }
+
+  html.light .markdown-content strong {
+    @apply text-slate-900;
+  }
+
+  html.light .markdown-content li {
+    @apply text-slate-700;
+  }
+
+  html.light .markdown-content code {
+    @apply bg-slate-200 text-cyan-700;
+  }
+
+  html.light .markdown-content pre {
+    @apply bg-slate-100 border-slate-300;
+  }
+
+  html.light .markdown-content pre code {
+    @apply text-slate-700 bg-transparent;
+  }
+
+  html.light .markdown-content a {
+    @apply text-cyan-600 hover:text-cyan-700;
+  }
+
+  html.light .markdown-content hr {
+    @apply border-slate-300;
+  }
+
+  html.light .markdown-content table {
+    @apply border-slate-300;
+  }
+
+  html.light .markdown-content thead tr {
+    @apply bg-slate-100 border-slate-300;
+  }
+
+  html.light .markdown-content th {
+    @apply text-slate-700 border-slate-300;
+  }
+
+  html.light .markdown-content td {
+    @apply text-slate-700 border-slate-300;
+  }
+
+  html.light .markdown-content tbody tr:nth-child(odd) {
+    @apply bg-slate-50;
+  }
+
+  html.light .markdown-content tbody tr:nth-child(even) {
+    @apply bg-white;
+  }
 }

@@ -6,11 +6,11 @@ interface BadgeProps {
 }
 
 const variants = {
-  default: 'bg-slate-700 text-slate-300',
-  success: 'bg-emerald-500/20 text-emerald-400',
-  warning: 'bg-amber-500/20 text-amber-400',
-  error: 'bg-rose-500/20 text-rose-400',
-  info: 'bg-cyan-500/20 text-cyan-400',
+  default: 'bg-slate-700 light:bg-slate-200 text-slate-300 light:text-slate-700',
+  success: 'bg-emerald-500/20 light:bg-emerald-100 text-emerald-400 light:text-emerald-700',
+  warning: 'bg-amber-500/20 light:bg-amber-100 text-amber-400 light:text-amber-700',
+  error: 'bg-rose-500/20 light:bg-rose-100 text-rose-400 light:text-rose-700',
+  info: 'bg-cyan-500/20 light:bg-cyan-100 text-cyan-400 light:text-cyan-700',
 };
 
 export function Badge({ variant = 'default', children }: BadgeProps) {

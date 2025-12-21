@@ -50,7 +50,7 @@ export function AddProviderModal({ isOpen, onClose, onAdd }: AddProviderModalPro
         />
 
         <div className="space-y-3">
-          <label className="block text-sm font-medium text-slate-300">
+          <label className="block text-sm font-medium text-slate-300 light:text-slate-700">
             服务商类型
           </label>
           <div className="grid grid-cols-1 gap-2">
@@ -64,8 +64,8 @@ export function AddProviderModal({ isOpen, onClose, onAdd }: AddProviderModalPro
                   onClick={() => setType(providerType.value as ProviderType)}
                   className={`flex items-center gap-3 p-3 rounded-lg border transition-all ${
                     isSelected
-                      ? 'bg-slate-800 border-cyan-500 ring-2 ring-cyan-500/20'
-                      : 'border-slate-700 hover:border-slate-600 hover:bg-slate-800/50'
+                      ? 'bg-slate-800 light:bg-cyan-50 border-cyan-500 ring-2 ring-cyan-500/20'
+                      : 'border-slate-700 light:border-slate-300 hover:border-slate-600 light:hover:border-slate-400 hover:bg-slate-800/50 light:hover:bg-slate-100'
                   }`}
                 >
                   <div
@@ -74,7 +74,7 @@ export function AddProviderModal({ isOpen, onClose, onAdd }: AddProviderModalPro
                     <Icon className="w-5 h-5 text-white" />
                   </div>
                   <div className="flex-1 text-left">
-                    <p className="text-sm font-medium text-slate-200">
+                    <p className="text-sm font-medium text-slate-200 light:text-slate-800">
                       {providerType.label}
                     </p>
                   </div>
@@ -82,7 +82,7 @@ export function AddProviderModal({ isOpen, onClose, onAdd }: AddProviderModalPro
                     className={`w-4 h-4 rounded-full border-2 transition-colors ${
                       isSelected
                         ? 'border-cyan-500 bg-cyan-500'
-                        : 'border-slate-600'
+                        : 'border-slate-600 light:border-slate-400'
                     }`}
                   >
                     {isSelected && (
@@ -97,7 +97,7 @@ export function AddProviderModal({ isOpen, onClose, onAdd }: AddProviderModalPro
           </div>
         </div>
 
-        <div className="flex justify-end gap-3 pt-4 border-t border-slate-700">
+        <div className="flex justify-end gap-3 pt-4 border-t border-slate-700 light:border-slate-200">
           <Button type="button" variant="ghost" onClick={onClose}>
             取消
           </Button>

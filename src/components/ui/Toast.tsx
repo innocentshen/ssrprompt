@@ -30,9 +30,9 @@ const icons = {
 };
 
 const colors = {
-  success: 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400',
-  error: 'bg-rose-500/10 border-rose-500/30 text-rose-400',
-  info: 'bg-cyan-500/10 border-cyan-500/30 text-cyan-400',
+  success: 'bg-emerald-500/10 light:bg-emerald-50 border-emerald-500/30 light:border-emerald-300 text-emerald-400 light:text-emerald-700',
+  error: 'bg-rose-500/10 light:bg-rose-50 border-rose-500/30 light:border-rose-300 text-rose-400 light:text-rose-700',
+  info: 'bg-cyan-500/10 light:bg-cyan-50 border-cyan-500/30 light:border-cyan-300 text-cyan-400 light:text-cyan-700',
 };
 
 function ToastItem({ toast, onRemove }: { toast: Toast; onRemove: () => void }) {

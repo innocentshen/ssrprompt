@@ -21,16 +21,25 @@ class MySQLQueryBuilder<T> implements QueryBuilder<T> {
   private _filters: FilterCondition[] = [];
   private _orderBy: { column: string; ascending: boolean }[] = [];
   private _limit: number | null = null;
+  private _returnData: boolean = false; // 标记是否在 insert/update 后返回数据
 
   constructor(
     private table: string,
     private config: MySQLConfig,
-    private edgeFunctionUrl: string
+    private edgeFunctionUrl: string,
+    private useLocalProxy: boolean
   ) {}
 
   select(columns: string = '*'): QueryBuilder<T> {
-    this._operation = 'select';
-    this._columns = columns;
+    // 如果已经是 insert 或 update 操作，不覆盖 _operation
+    // 只设置 _returnData 标志和 columns
+    if (this._operation === 'insert' || this._operation === 'update') {
+      this._returnData = true;
+      this._columns = columns;
+    } else {
+      this._operation = 'select';
+      this._columns = columns;
+    }
     return this;
   }
 
@@ -96,15 +105,31 @@ class MySQLQueryBuilder<T> implements QueryBuilder<T> {
     return this;
   }
 
+  private getAuthHeaders(): Record<string, string> {
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+    };
+
+    if (this.useLocalProxy) {
+      const apiKey = import.meta.env.VITE_MYSQL_PROXY_API_KEY;
+      if (apiKey) {
+        headers['X-API-Key'] = apiKey;
+      }
+    } else {
+      const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+      if (anonKey) {
+        headers['Authorization'] = `Bearer ${anonKey}`;
+      }
+    }
+
+    return headers;
+  }
+
   private async executeQuery<R>(singleRow: boolean = false): Promise<QueryResult<R>> {
     try {
-      const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
       const response = await fetch(this.edgeFunctionUrl, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${anonKey}`,
-        },
+        headers: this.getAuthHeaders(),
         body: JSON.stringify({
           config: this.config,
           operation: this._operation,
@@ -168,26 +193,57 @@ class MySQLQueryBuilder<T> implements QueryBuilder<T> {
 export class MySQLAdapter implements DatabaseService {
   private config: MySQLConfig;
   private edgeFunctionUrl: string;
+  private useLocalProxy: boolean;
 
   constructor(config: MySQLConfig) {
     this.config = config;
+
+    // 优先使用本地服务器，回退到 Supabase
+    const localServerUrl = import.meta.env.VITE_MYSQL_PROXY_URL;
     const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
-    this.edgeFunctionUrl = `${supabaseUrl}/functions/v1/mysql-proxy`;
+
+    if (localServerUrl) {
+      this.edgeFunctionUrl = localServerUrl;
+      this.useLocalProxy = true;
+      console.log('Using local MySQL proxy server:', localServerUrl);
+    } else if (supabaseUrl) {
+      this.edgeFunctionUrl = `${supabaseUrl}/functions/v1/mysql-proxy`;
+      this.useLocalProxy = false;
+      console.log('Using Supabase Edge Function:', this.edgeFunctionUrl);
+    } else {
+      throw new Error('No MySQL proxy configuration found. Please set VITE_MYSQL_PROXY_URL or VITE_SUPABASE_URL');
+    }
+  }
+
+  private getAuthHeaders(): Record<string, string> {
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+    };
+
+    if (this.useLocalProxy) {
+      const apiKey = import.meta.env.VITE_MYSQL_PROXY_API_KEY;
+      if (apiKey) {
+        headers['X-API-Key'] = apiKey;
+      }
+    } else {
+      const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+      if (anonKey) {
+        headers['Authorization'] = `Bearer ${anonKey}`;
+      }
+    }
+
+    return headers;
   }
 
   from<T>(table: string): QueryBuilder<T> {
-    return new MySQLQueryBuilder<T>(table, this.config, this.edgeFunctionUrl);
+    return new MySQLQueryBuilder<T>(table, this.config, this.edgeFunctionUrl, this.useLocalProxy);
   }
 
   async initialize(): Promise<{ success: boolean; error?: string }> {
     try {
-      const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
       const response = await fetch(this.edgeFunctionUrl, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${anonKey}`,
-        },
+        headers: this.getAuthHeaders(),
         body: JSON.stringify({
           config: this.config,
           operation: 'initialize',
@@ -208,13 +264,9 @@ export class MySQLAdapter implements DatabaseService {
 
   async testConnection(): Promise<{ success: boolean; error?: string }> {
     try {
-      const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
       const response = await fetch(this.edgeFunctionUrl, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${anonKey}`,
-        },
+        headers: this.getAuthHeaders(),
         body: JSON.stringify({
           config: this.config,
           operation: 'test',

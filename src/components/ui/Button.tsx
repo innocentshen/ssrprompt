@@ -12,8 +12,8 @@ const variants = {
   primary:
     'bg-gradient-to-r from-cyan-500 to-teal-500 text-white hover:from-cyan-600 hover:to-teal-600 shadow-lg shadow-cyan-500/20',
   secondary:
-    'bg-slate-800 text-slate-200 hover:bg-slate-700 border border-slate-700',
-  ghost: 'text-slate-400 hover:text-white hover:bg-slate-800',
+    'bg-slate-800 light:bg-slate-100 text-slate-200 light:text-slate-700 hover:bg-slate-700 light:hover:bg-slate-200 border border-slate-700 light:border-slate-300',
+  ghost: 'text-slate-400 light:text-slate-600 hover:text-white light:hover:text-slate-900 hover:bg-slate-800 light:hover:bg-slate-100',
   danger: 'bg-rose-600 text-white hover:bg-rose-700',
 };
 

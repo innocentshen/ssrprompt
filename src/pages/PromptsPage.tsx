@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo, useCallback, MutableRefObject } from 'react';
 import {
   Plus,
   Search,
@@ -17,11 +17,41 @@ import {
   GripVertical,
   GitCompare,
   Cpu,
+  Eye,
+  Sparkles,
+  Check,
+  Cloud,
+  CloudOff,
 } from 'lucide-react';
-import { Button, Input, Modal, Badge, Select, useToast, MarkdownRenderer } from '../components/ui';
+import { Button, Input, Modal, Badge, Select, useToast, MarkdownRenderer, Tabs, Collapsible } from '../components/ui';
+import { MessageList, ParameterPanel, VariableEditor, DebugHistory, PromptOptimizer, PromptObserver, StructuredOutputEditor } from '../components/Prompt';
+import type { DebugRun } from '../components/Prompt';
 import { getDatabase } from '../lib/database';
 import { callAIModel, fileToBase64, type FileAttachment } from '../lib/ai-service';
-import type { Prompt, Model, Provider, PromptVersion } from '../types';
+import { analyzePrompt, type PromptAnalysisResult } from '../lib/prompt-analyzer';
+import { toResponseFormat } from '../lib/schema-utils';
+import type { Prompt, Model, Provider, PromptVersion, PromptMessage, PromptConfig, PromptVariable } from '../types';
+import { DEFAULT_PROMPT_CONFIG } from '../types/database';
+
+type TabType = 'edit' | 'observe' | 'optimize';
+
+// Debounce helper with cancel support
+function debounce<T extends (...args: never[]) => unknown>(
+  fn: T,
+  delay: number,
+  cancelRef?: MutableRefObject<(() => void) | null>
+): (...args: Parameters<T>) => void {
+  let timeoutId: ReturnType<typeof setTimeout>;
+  const debouncedFn = (...args: Parameters<T>) => {
+    clearTimeout(timeoutId);
+    timeoutId = setTimeout(() => fn(...args), delay);
+  };
+  // Expose cancel function via ref
+  if (cancelRef) {
+    cancelRef.current = () => clearTimeout(timeoutId);
+  }
+  return debouncedFn;
+}
 
 export function PromptsPage() {
   const { showToast } = useToast();
@@ -48,6 +78,10 @@ export function PromptsPage() {
   const [searchQuery, setSearchQuery] = useState('');
   const [promptContent, setPromptContent] = useState('');
   const [promptName, setPromptName] = useState('');
+  const [promptMessages, setPromptMessages] = useState<PromptMessage[]>([]);
+  const [promptConfig, setPromptConfig] = useState<PromptConfig>(DEFAULT_PROMPT_CONFIG);
+  const [promptVariables, setPromptVariables] = useState<PromptVariable[]>([]);
+  const [variableValues, setVariableValues] = useState<Record<string, string>>({});
   const [testInput, setTestInput] = useState('');
   const [testOutput, setTestOutput] = useState('');
   const [selectedModel, setSelectedModel] = useState('');
@@ -57,8 +91,69 @@ export function PromptsPage() {
   const [attachedFiles, setAttachedFiles] = useState<FileAttachment[]>([]);
   const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
   const [renderMarkdown, setRenderMarkdown] = useState(true);
+  const [activeTab, setActiveTab] = useState<TabType>('edit');
+  const [autoSaveStatus, setAutoSaveStatus] = useState<'saved' | 'saving' | 'unsaved' | 'error'>('saved');
+  const [debugRuns, setDebugRuns] = useState<DebugRun[]>([]);
+  const [selectedDebugRun, setSelectedDebugRun] = useState<DebugRun | null>(null);
+  const [isOptimizing, setIsOptimizing] = useState(false);
+  const [analysisResult, setAnalysisResult] = useState<PromptAnalysisResult | null>(null);
+  const [optimizeModelId, setOptimizeModelId] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
   const compareFileInputRef = useRef<HTMLInputElement>(null);
+  const cancelAutoSaveRef = useRef<(() => void) | null>(null);
+  const lastSyncedPromptIdRef = useRef<string | null>(null);
+  const isPromptSwitchingRef = useRef(false);
+
+  // Auto-save debounced function
+  const debouncedAutoSave = useMemo(
+    () =>
+      debounce(async (promptId: string, data: Partial<Prompt>) => {
+        // Validate that we're still on the same prompt before saving
+        if (lastSyncedPromptIdRef.current !== promptId || isPromptSwitchingRef.current) {
+          return;
+        }
+
+        setAutoSaveStatus('saving');
+        try {
+          const { error } = await getDatabase()
+            .from('prompts')
+            .update({
+              ...data,
+              updated_at: new Date().toISOString(),
+            })
+            .eq('id', promptId);
+
+          // Double-check we're still on the same prompt after async operation
+          if (lastSyncedPromptIdRef.current !== promptId) {
+            return;
+          }
+
+          if (error) {
+            setAutoSaveStatus('error');
+          } else {
+            setAutoSaveStatus('saved');
+            // Update prompts list and selectedPrompt to keep them in sync
+            setPrompts((prev) =>
+              prev.map((p) =>
+                p.id === promptId
+                  ? { ...p, ...data, updated_at: new Date().toISOString() }
+                  : p
+              )
+            );
+            setSelectedPrompt((prev) =>
+              prev && prev.id === promptId
+                ? { ...prev, ...data, updated_at: new Date().toISOString() }
+                : prev
+            );
+          }
+        } catch {
+          if (lastSyncedPromptIdRef.current === promptId) {
+            setAutoSaveStatus('error');
+          }
+        }
+      }, 2000, cancelAutoSaveRef),
+    []
+  );
 
   useEffect(() => {
     loadData();
@@ -66,14 +161,72 @@ export function PromptsPage() {
 
   useEffect(() => {
     if (selectedPrompt) {
+      // Mark that we're switching prompts - block auto-save
+      isPromptSwitchingRef.current = true;
+
+      // Cancel any pending auto-save from the previous prompt
+      if (cancelAutoSaveRef.current) {
+        cancelAutoSaveRef.current();
+      }
+
       setPromptContent(selectedPrompt.content);
       setPromptName(selectedPrompt.name);
+      setPromptMessages(selectedPrompt.messages || []);
+      setPromptConfig(selectedPrompt.config || DEFAULT_PROMPT_CONFIG);
+      setPromptVariables(selectedPrompt.variables || []);
       if (selectedPrompt.default_model_id) {
         setSelectedModel(selectedPrompt.default_model_id);
       }
       loadVersions(selectedPrompt.id);
+      setAutoSaveStatus('saved');
+
+      // Use setTimeout to ensure state updates are processed before allowing auto-save
+      // This runs after React has batched and applied all the setState calls above
+      setTimeout(() => {
+        lastSyncedPromptIdRef.current = selectedPrompt.id;
+        isPromptSwitchingRef.current = false;
+      }, 0);
+    } else {
+      // Clear the refs when no prompt is selected
+      lastSyncedPromptIdRef.current = null;
+      isPromptSwitchingRef.current = false;
     }
   }, [selectedPrompt]);
+
+  // Auto-save when content changes
+  useEffect(() => {
+    // Skip auto-save if:
+    // 1. No selected prompt
+    // 2. Currently saving
+    // 3. Currently switching prompts (state not yet synced)
+    // 4. The synced prompt ID doesn't match (safety check)
+    if (
+      !selectedPrompt ||
+      autoSaveStatus === 'saving' ||
+      isPromptSwitchingRef.current ||
+      lastSyncedPromptIdRef.current !== selectedPrompt.id
+    ) {
+      return;
+    }
+
+    const hasChanges =
+      promptContent !== selectedPrompt.content ||
+      promptName !== selectedPrompt.name ||
+      JSON.stringify(promptMessages) !== JSON.stringify(selectedPrompt.messages || []) ||
+      JSON.stringify(promptConfig) !== JSON.stringify(selectedPrompt.config || DEFAULT_PROMPT_CONFIG) ||
+      JSON.stringify(promptVariables) !== JSON.stringify(selectedPrompt.variables || []);
+
+    if (hasChanges) {
+      setAutoSaveStatus('unsaved');
+      debouncedAutoSave(selectedPrompt.id, {
+        content: promptContent,
+        name: promptName,
+        messages: promptMessages,
+        config: promptConfig,
+        variables: promptVariables,
+      });
+    }
+  }, [promptContent, promptName, promptMessages, promptConfig, promptVariables, selectedPrompt, debouncedAutoSave, autoSaveStatus]);
 
   const loadData = async () => {
     const [promptsRes, providersRes, modelsRes] = await Promise.all([
@@ -91,7 +244,10 @@ export function PromptsPage() {
     if (providersRes.data) setProviders(providersRes.data);
     if (modelsRes.data) {
       setModels(modelsRes.data);
-      if (modelsRes.data.length > 0) setSelectedModel(modelsRes.data[0].id);
+      if (modelsRes.data.length > 0) {
+        setSelectedModel(modelsRes.data[0].id);
+        setOptimizeModelId(modelsRes.data[0].id);
+      }
     }
   };
 
@@ -115,6 +271,8 @@ export function PromptsPage() {
           description: '',
           content: '',
           variables: [],
+          messages: [],
+          config: DEFAULT_PROMPT_CONFIG,
           current_version: 1,
           order_index: maxOrder + 1,
         })
@@ -147,7 +305,7 @@ export function PromptsPage() {
       await getDatabase().from('prompt_versions').insert({
         prompt_id: selectedPrompt.id,
         version: newVersion,
-        content: promptContent,
+        content: promptMessages.length > 0 ? JSON.stringify(promptMessages) : promptContent,
         commit_message: `Version ${newVersion}`,
       });
 
@@ -156,6 +314,9 @@ export function PromptsPage() {
         .update({
           name: promptName,
           content: promptContent,
+          messages: promptMessages,
+          config: promptConfig,
+          variables: promptVariables,
           current_version: newVersion,
           default_model_id: selectedModel || null,
           updated_at: new Date().toISOString(),
@@ -171,6 +332,9 @@ export function PromptsPage() {
         ...selectedPrompt,
         name: promptName,
         content: promptContent,
+        messages: promptMessages,
+        config: promptConfig,
+        variables: promptVariables,
         current_version: newVersion,
         default_model_id: selectedModel || null,
         updated_at: new Date().toISOString(),
@@ -180,6 +344,7 @@ export function PromptsPage() {
         prev.map((p) => (p.id === selectedPrompt.id ? updated : p))
       );
       loadVersions(selectedPrompt.id);
+      setAutoSaveStatus('saved');
       showToast('success', '已保存为 v' + newVersion);
     } catch {
       showToast('error', '保存失败');
@@ -188,11 +353,38 @@ export function PromptsPage() {
     }
   };
 
+  // Build prompt from messages
+  const buildPromptFromMessages = useCallback(() => {
+    if (promptMessages.length > 0) {
+      return promptMessages.map((m) => `[${m.role.toUpperCase()}]\n${m.content}`).join('\n\n');
+    }
+    return promptContent;
+  }, [promptMessages, promptContent]);
+
+  // Replace variables in prompt
+  const replaceVariables = useCallback((prompt: string, values: Record<string, string>) => {
+    let result = prompt;
+    for (const [key, value] of Object.entries(values)) {
+      result = result.replace(new RegExp(`\\{\\{\\s*${key}\\s*\\}\\}`, 'g'), value);
+    }
+    // Also replace variables from promptVariables with their default values if not provided
+    for (const variable of promptVariables) {
+      if (!values[variable.name] && variable.default_value) {
+        result = result.replace(new RegExp(`\\{\\{\\s*${variable.name}\\s*\\}\\}`, 'g'), variable.default_value);
+      }
+    }
+    return result;
+  }, [promptVariables]);
+
   const handleRun = async () => {
-    if (!promptContent) {
+    let finalPrompt = buildPromptFromMessages();
+    if (!finalPrompt) {
       showToast('error', '请先编写 Prompt 内容');
       return;
     }
+
+    // Replace variables
+    finalPrompt = replaceVariables(finalPrompt, variableValues);
 
     const model = models.find((m) => m.id === selectedModel);
     const provider = providers.find((p) => p.id === model?.provider_id);
@@ -205,22 +397,55 @@ export function PromptsPage() {
     setRunning(true);
     setTestOutput('');
 
+    const runId = `run_${Date.now()}`;
+    const startTime = Date.now();
+
     try {
+      // Build options with parameters and response format
+      const options: { responseFormat?: object; parameters?: object } = {
+        parameters: {
+          temperature: promptConfig.temperature,
+          top_p: promptConfig.top_p,
+          max_tokens: promptConfig.max_tokens,
+          frequency_penalty: promptConfig.frequency_penalty,
+          presence_penalty: promptConfig.presence_penalty,
+        },
+      };
+
+      if (promptConfig.output_schema?.enabled) {
+        options.responseFormat = toResponseFormat(promptConfig.output_schema);
+      }
+
       const result = await callAIModel(
         provider,
         model.name,
-        promptContent,
+        finalPrompt,
         testInput,
-        attachedFiles.length > 0 ? attachedFiles : undefined
+        attachedFiles.length > 0 ? attachedFiles : undefined,
+        options
       );
 
       const outputText = `${result.content}\n\n---\n**处理时间:** ${(result.latencyMs / 1000).toFixed(2)}s\n**令牌使用:** ${result.tokensInput} 输入 / ${result.tokensOutput} 输出 (共 ${result.tokensInput + result.tokensOutput})`;
       setTestOutput(outputText);
 
+      // Add to debug history
+      const newRun: DebugRun = {
+        id: runId,
+        input: testInput,
+        inputVariables: {},
+        output: result.content,
+        status: 'success',
+        latencyMs: result.latencyMs,
+        tokensInput: result.tokensInput,
+        tokensOutput: result.tokensOutput,
+        timestamp: new Date(),
+      };
+      setDebugRuns((prev) => [newRun, ...prev.slice(0, 19)]);
+
       await getDatabase().from('traces').insert({
         prompt_id: selectedPrompt?.id,
         model_id: model.id,
-        input: promptContent + (testInput ? `\n\n用户输入: ${testInput}` : ''),
+        input: finalPrompt + (testInput ? `\n\n用户输入: ${testInput}` : ''),
         output: result.content,
         tokens_input: result.tokensInput,
         tokens_output: result.tokensOutput,
@@ -228,7 +453,7 @@ export function PromptsPage() {
         status: 'success',
         metadata: {
           test_input: testInput,
-          files: attachedFiles.map(f => ({ name: f.name, type: f.type })),
+          files: attachedFiles.map((f) => ({ name: f.name, type: f.type })),
         },
       });
 
@@ -237,10 +462,25 @@ export function PromptsPage() {
       const errorMessage = error instanceof Error ? error.message : '未知错误';
       setTestOutput(`**[错误]**\n\n${errorMessage}\n\n请检查:\n1. API Key 是否正确配置\n2. 模型名称是否正确\n3. Base URL 是否可访问\n4. 网络连接是否正常`);
 
+      // Add to debug history
+      const newRun: DebugRun = {
+        id: runId,
+        input: testInput,
+        inputVariables: {},
+        output: '',
+        status: 'error',
+        errorMessage,
+        latencyMs: Date.now() - startTime,
+        tokensInput: 0,
+        tokensOutput: 0,
+        timestamp: new Date(),
+      };
+      setDebugRuns((prev) => [newRun, ...prev.slice(0, 19)]);
+
       await getDatabase().from('traces').insert({
         prompt_id: selectedPrompt?.id,
         model_id: model.id,
-        input: promptContent + (testInput ? `\n\n用户输入: ${testInput}` : ''),
+        input: finalPrompt + (testInput ? `\n\n用户输入: ${testInput}` : ''),
         output: errorMessage,
         tokens_input: 0,
         tokens_output: 0,
@@ -273,7 +513,16 @@ export function PromptsPage() {
   };
 
   const handleRestoreVersion = async (version: PromptVersion) => {
-    setPromptContent(version.content);
+    try {
+      const content = JSON.parse(version.content);
+      if (Array.isArray(content)) {
+        setPromptMessages(content);
+      } else {
+        setPromptContent(version.content);
+      }
+    } catch {
+      setPromptContent(version.content);
+    }
     setShowVersions(false);
     showToast('info', `已恢复到 v${version.version}`);
   };
@@ -311,6 +560,54 @@ export function PromptsPage() {
     }
 
     setDraggedIndex(null);
+  };
+
+  const handleReplayDebugRun = (run: DebugRun) => {
+    setTestInput(run.input);
+  };
+
+  const handleClearDebugHistory = () => {
+    setDebugRuns([]);
+    setSelectedDebugRun(null);
+  };
+
+  const handleOptimize = async () => {
+    setIsOptimizing(true);
+    setAnalysisResult(null);
+
+    try {
+      const model = models.find((m) => m.id === optimizeModelId);
+      const provider = providers.find((p) => p.id === model?.provider_id);
+
+      if (!model || !provider) {
+        showToast('error', '请先选择一个分析模型');
+        return [];
+      }
+
+      const result = await analyzePrompt(provider, model.name, {
+        messages: promptMessages,
+        content: promptContent,
+        variables: promptVariables,
+      });
+
+      setAnalysisResult(result);
+
+      if (result.score >= 90) {
+        showToast('success', `分析完成！评分: ${result.score}/100 - 优秀`);
+      } else if (result.score >= 70) {
+        showToast('success', `分析完成！评分: ${result.score}/100 - 良好`);
+      } else {
+        showToast('info', `分析完成！评分: ${result.score}/100 - 有改进空间`);
+      }
+
+      return result.suggestions;
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : '分析失败';
+      showToast('error', errorMessage);
+      return [];
+    } finally {
+      setIsOptimizing(false);
+    }
   };
 
   const filteredPrompts = prompts.filter((p) =>
@@ -418,12 +715,14 @@ export function PromptsPage() {
         ]);
 
         setCompareResults({
-          left: result1.status === 'fulfilled'
-            ? { content: result1.value.content, latency: result1.value.latencyMs, tokensIn: result1.value.tokensInput, tokensOut: result1.value.tokensOutput }
-            : { content: '', latency: 0, tokensIn: 0, tokensOut: 0, error: result1.reason?.message || '执行失败' },
-          right: result2.status === 'fulfilled'
-            ? { content: result2.value.content, latency: result2.value.latencyMs, tokensIn: result2.value.tokensInput, tokensOut: result2.value.tokensOutput }
-            : { content: '', latency: 0, tokensIn: 0, tokensOut: 0, error: result2.reason?.message || '执行失败' },
+          left:
+            result1.status === 'fulfilled'
+              ? { content: result1.value.content, latency: result1.value.latencyMs, tokensIn: result1.value.tokensInput, tokensOut: result1.value.tokensOutput }
+              : { content: '', latency: 0, tokensIn: 0, tokensOut: 0, error: result1.reason?.message || '执行失败' },
+          right:
+            result2.status === 'fulfilled'
+              ? { content: result2.value.content, latency: result2.value.latencyMs, tokensIn: result2.value.tokensInput, tokensOut: result2.value.tokensOutput }
+              : { content: '', latency: 0, tokensIn: 0, tokensOut: 0, error: result2.reason?.message || '执行失败' },
         });
       } else {
         const model = models.find((m) => m.id === compareModel);
@@ -445,12 +744,14 @@ export function PromptsPage() {
         ]);
 
         setCompareResults({
-          left: result1.status === 'fulfilled'
-            ? { content: result1.value.content, latency: result1.value.latencyMs, tokensIn: result1.value.tokensInput, tokensOut: result1.value.tokensOutput }
-            : { content: '', latency: 0, tokensIn: 0, tokensOut: 0, error: result1.reason?.message || '执行失败' },
-          right: result2.status === 'fulfilled'
-            ? { content: result2.value.content, latency: result2.value.latencyMs, tokensIn: result2.value.tokensInput, tokensOut: result2.value.tokensOutput }
-            : { content: '', latency: 0, tokensIn: 0, tokensOut: 0, error: result2.reason?.message || '执行失败' },
+          left:
+            result1.status === 'fulfilled'
+              ? { content: result1.value.content, latency: result1.value.latencyMs, tokensIn: result1.value.tokensInput, tokensOut: result1.value.tokensOutput }
+              : { content: '', latency: 0, tokensIn: 0, tokensOut: 0, error: result1.reason?.message || '执行失败' },
+          right:
+            result2.status === 'fulfilled'
+              ? { content: result2.value.content, latency: result2.value.latencyMs, tokensIn: result2.value.tokensInput, tokensOut: result2.value.tokensOutput }
+              : { content: '', latency: 0, tokensIn: 0, tokensOut: 0, error: result2.reason?.message || '执行失败' },
         });
       }
 
@@ -493,10 +794,50 @@ export function PromptsPage() {
     setCompareFiles((prev) => prev.filter((_, i) => i !== index));
   };
 
+  const tabs = [
+    { id: 'edit' as TabType, label: '编辑', icon: <FileText className="w-4 h-4" /> },
+    { id: 'observe' as TabType, label: '历史', icon: <Eye className="w-4 h-4" /> },
+    { id: 'optimize' as TabType, label: '智能优化', icon: <Sparkles className="w-4 h-4" /> },
+  ];
+
+  const renderAutoSaveStatus = () => {
+    switch (autoSaveStatus) {
+      case 'saved':
+        return (
+          <span className="flex items-center gap-1 text-xs text-green-400 light:text-green-600">
+            <Check className="w-3 h-3" />
+            已保存
+          </span>
+        );
+      case 'saving':
+        return (
+          <span className="flex items-center gap-1 text-xs text-cyan-400 light:text-cyan-600">
+            <Cloud className="w-3 h-3 animate-pulse" />
+            保存中...
+          </span>
+        );
+      case 'unsaved':
+        return (
+          <span className="flex items-center gap-1 text-xs text-amber-400 light:text-amber-600">
+            <CloudOff className="w-3 h-3" />
+            未保存
+          </span>
+        );
+      case 'error':
+        return (
+          <span className="flex items-center gap-1 text-xs text-red-400 light:text-red-600">
+            <CloudOff className="w-3 h-3" />
+            保存失败
+          </span>
+        );
+    }
+  };
+
   return (
-    <div className="h-full flex bg-slate-950 light:bg-slate-50">
-      <div className="w-72 bg-slate-900/50 light:bg-white border-r border-slate-700 light:border-slate-200 flex flex-col">
-        <div className="p-4 space-y-3 border-b border-slate-700 light:border-slate-200">
+    <div className="h-full flex overflow-hidden bg-slate-950 light:bg-slate-50">
+      {/* Left sidebar - Prompt list */}
+      <div className="w-72 bg-slate-900/50 light:bg-white border-r border-slate-700 light:border-slate-200 flex flex-col overflow-hidden">
+        <div className="flex-shrink-0 p-4 space-y-3 border-b border-slate-700 light:border-slate-200">
           <div className="relative">
             <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 light:text-slate-400" />
             <input
@@ -557,10 +898,12 @@ export function PromptsPage() {
         </div>
       </div>
 
-      <div className="flex-1 flex flex-col">
+      {/* Main content */}
+      <div className="flex-1 flex flex-col overflow-hidden">
         {selectedPrompt ? (
           <>
-            <div className="h-14 px-6 flex items-center justify-between border-b border-slate-700 light:border-slate-200">
+            {/* Header */}
+            <div className="h-14 flex-shrink-0 px-6 flex items-center justify-between border-b border-slate-700 light:border-slate-200">
               <div className="flex items-center gap-3">
                 <input
                   type="text"
@@ -569,6 +912,7 @@ export function PromptsPage() {
                   className="text-lg font-medium text-white light:text-slate-900 bg-transparent border-none focus:outline-none"
                 />
                 <Badge variant="info">v{selectedPrompt.current_version}</Badge>
+                {renderAutoSaveStatus()}
               </div>
               <div className="flex items-center gap-2">
                 <Button variant="ghost" size="sm" onClick={() => setShowCompare(true)}>
@@ -579,13 +923,9 @@ export function PromptsPage() {
                   <History className="w-4 h-4" />
                   <span>历史</span>
                 </Button>
-                <Button variant="ghost" size="sm">
-                  <Wand2 className="w-4 h-4" />
-                  <span>优化</span>
-                </Button>
                 <Button variant="secondary" size="sm" onClick={handleSave} loading={saving}>
                   <Save className="w-4 h-4" />
-                  <span>保存</span>
+                  <span>提交新版</span>
                 </Button>
                 <Button variant="ghost" size="sm" onClick={handleDeletePrompt}>
                   <Trash2 className="w-4 h-4 text-red-400" />
@@ -593,153 +933,323 @@ export function PromptsPage() {
               </div>
             </div>
 
-            <div className="flex-1 flex">
-              <div className="flex-1 flex flex-col border-r border-slate-700 light:border-slate-200">
-                <div className="p-4 border-b border-slate-700 light:border-slate-200">
-                  <h3 className="text-sm font-medium text-slate-300 light:text-slate-700">Prompt 编辑器</h3>
-                  <p className="text-xs text-slate-500 light:text-slate-600 mt-1">
-                    使用 {'{{变量名}}'} 定义变量
-                  </p>
-                </div>
-                <div className="flex-1 p-4">
-                  <textarea
-                    value={promptContent}
-                    onChange={(e) => setPromptContent(e.target.value)}
-                    placeholder="在这里编写你的 Prompt...&#10;&#10;示例:&#10;你是一个专业的 {{role}}。用户会向你提问，请根据以下上下文回答:&#10;&#10;上下文: {{context}}&#10;&#10;问题: {{question}}"
-                    className="w-full h-full p-4 bg-slate-800/50 light:bg-white border border-slate-700 light:border-slate-300 rounded-lg text-sm text-slate-200 light:text-slate-800 placeholder-slate-500 light:placeholder-slate-400 resize-none focus:outline-none focus:border-cyan-500 font-mono"
-                  />
-                </div>
-              </div>
+            {/* Tabs */}
+            <div className="flex-shrink-0 px-6 pt-4">
+              <Tabs tabs={tabs} activeTab={activeTab} onChange={(id) => setActiveTab(id as TabType)} variant="pills" />
+            </div>
 
-              <div className="w-96 flex flex-col bg-slate-900/30 light:bg-slate-100">
-                <div className="p-4 border-b border-slate-700 light:border-slate-200">
-                  <h3 className="text-sm font-medium text-slate-300 light:text-slate-700">测试运行</h3>
-                </div>
-                <div className="p-4 space-y-4">
-                  <Select
-                    label="选择模型 (保存后将作为默认模型)"
-                    value={selectedModel}
-                    onChange={(e) => setSelectedModel(e.target.value)}
-                    options={
-                      enabledModels.length > 0
-                        ? enabledModels.map((m) => ({ value: m.id, label: m.name }))
-                        : [{ value: '', label: '请先配置并启用模型服务商' }]
-                    }
-                  />
-                  <div className="space-y-1.5">
-                    <label className="block text-sm font-medium text-slate-300 light:text-slate-700">
-                      测试输入
-                    </label>
-                    <textarea
-                      value={testInput}
-                      onChange={(e) => setTestInput(e.target.value)}
-                      placeholder="输入测试内容..."
-                      rows={3}
-                      className="w-full p-3 bg-slate-800 light:bg-white border border-slate-700 light:border-slate-300 rounded-lg text-sm text-slate-200 light:text-slate-800 placeholder-slate-500 light:placeholder-slate-400 resize-none focus:outline-none focus:border-cyan-500"
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between">
-                      <label className="block text-sm font-medium text-slate-300 light:text-slate-700">
-                        附件
-                      </label>
-                      <button
-                        type="button"
-                        onClick={() => fileInputRef.current?.click()}
-                        className="flex items-center gap-1 text-xs text-cyan-400 hover:text-cyan-300 transition-colors"
-                      >
-                        <Paperclip className="w-3.5 h-3.5" />
-                        添加文件
-                      </button>
+            {/* Content based on active tab */}
+            <div className="flex-1 flex overflow-hidden">
+              {activeTab === 'edit' && (
+                <>
+                  {/* Left panel - Prompt Editor */}
+                  <div className="flex-1 flex flex-col border-r border-slate-700 light:border-slate-200 overflow-hidden min-w-0 basis-0">
+                    <div className="flex-shrink-0 p-4 border-b border-slate-700 light:border-slate-200">
+                      <h3 className="text-sm font-medium text-slate-300 light:text-slate-700">Prompt 编辑器</h3>
+                      <p className="text-xs text-slate-500 light:text-slate-600 mt-1">
+                        使用多消息模式编写对话，或使用 {'{{变量名}}'} 定义变量
+                      </p>
                     </div>
-                    <input
-                      ref={fileInputRef}
-                      type="file"
-                      accept="image/*,application/pdf"
-                      multiple
-                      onChange={handleFileSelect}
-                      className="hidden"
-                    />
-                    {attachedFiles.length > 0 ? (
-                      <div className="space-y-1.5">
-                        {attachedFiles.map((file, index) => {
-                          const FileIcon = getFileIcon(file.type);
-                          return (
-                            <div
-                              key={index}
-                              className="flex items-center gap-2 p-2 bg-slate-800 border border-slate-700 rounded-lg"
-                            >
-                              {file.type.startsWith('image/') ? (
-                                <img
-                                  src={`data:${file.type};base64,${file.base64}`}
-                                  alt={file.name}
-                                  className="w-8 h-8 object-cover rounded"
-                                />
-                              ) : (
-                                <FileIcon className="w-4 h-4 text-slate-400" />
-                              )}
-                              <span className="flex-1 text-xs text-slate-300 truncate">
-                                {file.name}
-                              </span>
-                              <button
-                                type="button"
-                                onClick={() => removeFile(index)}
-                                className="p-1 text-slate-500 hover:text-red-400 transition-colors"
-                              >
-                                <X className="w-3.5 h-3.5" />
-                              </button>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    ) : (
-                      <div className="p-3 border border-dashed border-slate-700 rounded-lg text-center">
-                        <p className="text-xs text-slate-500">
-                          支持图片 (JPG, PNG, GIF, WebP) 和 PDF
-                        </p>
-                      </div>
-                    )}
-                  </div>
-                  <Button className="w-full" onClick={handleRun} loading={running}>
-                    <Play className="w-4 h-4" />
-                    <span>运行</span>
-                  </Button>
-                </div>
-                <div className="flex-1 p-4 border-t border-slate-700 light:border-slate-200 flex flex-col">
-                  <div className="flex items-center justify-between mb-2">
-                    <label className="block text-sm font-medium text-slate-300 light:text-slate-700">
-                      输出结果
-                    </label>
-                    <button
-                      type="button"
-                      onClick={() => setRenderMarkdown(!renderMarkdown)}
-                      className={`text-xs px-2 py-1 rounded transition-colors ${
-                        renderMarkdown
-                          ? 'bg-cyan-500/20 text-cyan-400'
-                          : 'bg-slate-700 light:bg-slate-200 text-slate-400 light:text-slate-600 hover:text-slate-300 light:hover:text-slate-800'
-                      }`}
-                    >
-                      {renderMarkdown ? 'Markdown' : '纯文本'}
-                    </button>
-                  </div>
-                  <div className="flex-1 min-h-[200px] max-h-64 p-3 bg-slate-800/50 light:bg-white border border-slate-700 light:border-slate-300 rounded-lg text-sm text-slate-300 light:text-slate-700 overflow-y-auto">
-                    {running ? (
-                      <div className="flex items-center gap-2 text-slate-500 light:text-slate-600">
-                        <Loader2 className="w-4 h-4 animate-spin" />
-                        <span>生成中...</span>
-                      </div>
-                    ) : testOutput ? (
-                      renderMarkdown ? (
-                        <MarkdownRenderer content={testOutput} />
+                    <div className="flex-1 p-4 overflow-y-auto">
+                      {promptMessages.length > 0 ? (
+                        <MessageList
+                          messages={promptMessages}
+                          onChange={setPromptMessages}
+                        />
                       ) : (
-                        <pre className="whitespace-pre-wrap font-mono">{testOutput}</pre>
-                      )
-                    ) : (
-                      <span className="text-slate-500 light:text-slate-600">点击运行查看结果</span>
-                    )}
+                        <div className="h-full flex flex-col">
+                          <textarea
+                            value={promptContent}
+                            onChange={(e) => setPromptContent(e.target.value)}
+                            placeholder="在这里编写你的 Prompt...&#10;&#10;示例:&#10;你是一个专业的 {{role}}。用户会向你提问，请根据以下上下文回答:&#10;&#10;上下文: {{context}}&#10;&#10;问题: {{question}}"
+                            className="flex-1 w-full p-4 bg-slate-800/50 light:bg-white border border-slate-700 light:border-slate-300 rounded-lg text-sm text-slate-200 light:text-slate-800 placeholder-slate-500 light:placeholder-slate-400 resize-none focus:outline-none focus:border-cyan-500 font-mono"
+                          />
+                          <div className="text-center mt-4">
+                            <Button
+                              variant="secondary"
+                              size="sm"
+                              onClick={() => {
+                                setPromptMessages([
+                                  { id: `msg_${Date.now()}_1`, role: 'system', content: promptContent || 'You are a helpful assistant.' },
+                                  { id: `msg_${Date.now()}_2`, role: 'user', content: '' },
+                                ]);
+                                setPromptContent('');
+                              }}
+                            >
+                              <Plus className="w-4 h-4 mr-1" />
+                              切换到多消息模式
+                            </Button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
                   </div>
+
+                  {/* Middle panel - Model Configuration */}
+                  <div className="w-72 flex flex-col border-r border-slate-700 light:border-slate-200 bg-slate-900/30 light:bg-slate-50 overflow-hidden">
+                    <div className="flex-shrink-0 p-3 border-b border-slate-700 light:border-slate-200">
+                      <div className="flex items-center gap-2">
+                        <Cpu className="w-4 h-4 text-cyan-400" />
+                        <span className="text-sm font-medium text-slate-300 light:text-slate-700">运行配置</span>
+                      </div>
+                    </div>
+                    <div className="flex-1 overflow-y-auto p-3 space-y-3">
+                      {/* Model selector */}
+                      <div className="p-3 bg-slate-800/50 light:bg-white rounded-lg border border-slate-700 light:border-slate-200">
+                        <label className="block text-xs text-slate-400 light:text-slate-600 mb-2">
+                          运行模型
+                        </label>
+                        <select
+                          value={selectedModel}
+                          onChange={(e) => setSelectedModel(e.target.value)}
+                          className="w-full px-3 py-2 bg-slate-900 light:bg-slate-50 border border-slate-600 light:border-slate-300 rounded-lg text-sm text-slate-200 light:text-slate-800 focus:outline-none focus:border-cyan-500"
+                        >
+                          {enabledModels.length > 0 ? (
+                            enabledModels.map((m) => (
+                              <option key={m.id} value={m.id}>{m.name}</option>
+                            ))
+                          ) : (
+                            <option value="">请先配置模型</option>
+                          )}
+                        </select>
+                      </div>
+
+                      {/* Parameter panel */}
+                      <ParameterPanel
+                        config={promptConfig}
+                        onChange={setPromptConfig}
+                      />
+
+                      {/* Variable editor */}
+                      <VariableEditor
+                        variables={promptVariables}
+                        onChange={setPromptVariables}
+                      />
+
+                      {/* Structured output editor */}
+                      <StructuredOutputEditor
+                        schema={promptConfig.output_schema}
+                        onChange={(schema) => setPromptConfig({ ...promptConfig, output_schema: schema })}
+                        disabled={running}
+                      />
+
+                      {/* Debug history */}
+                      <DebugHistory
+                        runs={debugRuns}
+                        onReplay={handleReplayDebugRun}
+                        onClear={handleClearDebugHistory}
+                        onSelect={setSelectedDebugRun}
+                        selectedRunId={selectedDebugRun?.id}
+                      />
+                    </div>
+                  </div>
+
+                  {/* Right panel - Test & Output */}
+                  <div className="flex-1 flex flex-col bg-slate-900/20 light:bg-slate-100 overflow-hidden min-w-0 basis-0">
+                    <div className="flex-shrink-0 p-4 border-b border-slate-700 light:border-slate-200">
+                      <h3 className="text-sm font-medium text-slate-300 light:text-slate-700">测试与输出</h3>
+                    </div>
+                    <div className="flex-1 overflow-y-auto p-4 space-y-4">
+                      {/* Variable values input */}
+                      {promptVariables.length > 0 && (
+                        <div className="space-y-2">
+                          <label className="block text-sm font-medium text-slate-300 light:text-slate-700">
+                            变量值
+                          </label>
+                          <div className="space-y-2 p-3 bg-slate-800/50 light:bg-slate-50 rounded-lg border border-slate-700 light:border-slate-200">
+                            {promptVariables.map((variable) => (
+                              <div key={variable.name} className="flex items-center gap-2">
+                                <code className="text-xs text-amber-400 light:text-amber-600 font-mono min-w-[100px]">
+                                  {`{{${variable.name}}}`}
+                                  {variable.required && <span className="text-red-400">*</span>}
+                                </code>
+                                <input
+                                  type="text"
+                                  value={variableValues[variable.name] || ''}
+                                  onChange={(e) =>
+                                    setVariableValues((prev) => ({
+                                      ...prev,
+                                      [variable.name]: e.target.value,
+                                    }))
+                                  }
+                                  placeholder={variable.default_value || variable.description || '输入值...'}
+                                  className="flex-1 px-2 py-1.5 bg-slate-800 light:bg-white border border-slate-600 light:border-slate-300 rounded text-sm text-slate-200 light:text-slate-800 placeholder-slate-500 focus:outline-none focus:border-cyan-500"
+                                />
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Test input */}
+                      <div className="space-y-1.5">
+                        <label className="block text-sm font-medium text-slate-300 light:text-slate-700">
+                          测试输入
+                        </label>
+                        <textarea
+                          value={testInput}
+                          onChange={(e) => setTestInput(e.target.value)}
+                          placeholder="输入测试内容..."
+                          rows={4}
+                          className="w-full p-3 bg-slate-800 light:bg-white border border-slate-700 light:border-slate-300 rounded-lg text-sm text-slate-200 light:text-slate-800 placeholder-slate-500 light:placeholder-slate-400 resize-none focus:outline-none focus:border-cyan-500"
+                        />
+                      </div>
+
+                      {/* Attachments */}
+                      <div className="space-y-2">
+                        <div className="flex items-center justify-between">
+                          <label className="block text-sm font-medium text-slate-300 light:text-slate-700">
+                            附件
+                          </label>
+                          <button
+                            type="button"
+                            onClick={() => fileInputRef.current?.click()}
+                            className="flex items-center gap-1 text-xs text-cyan-400 hover:text-cyan-300 transition-colors"
+                          >
+                            <Paperclip className="w-3.5 h-3.5" />
+                            添加文件
+                          </button>
+                        </div>
+                        <input
+                          ref={fileInputRef}
+                          type="file"
+                          accept="image/*,application/pdf"
+                          multiple
+                          onChange={handleFileSelect}
+                          className="hidden"
+                        />
+                        {attachedFiles.length > 0 ? (
+                          <div className="space-y-1.5">
+                            {attachedFiles.map((file, index) => {
+                              const FileIcon = getFileIcon(file.type);
+                              return (
+                                <div
+                                  key={index}
+                                  className="flex items-center gap-2 p-2 bg-slate-800 light:bg-white border border-slate-700 light:border-slate-300 rounded-lg"
+                                >
+                                  {file.type.startsWith('image/') ? (
+                                    <img
+                                      src={`data:${file.type};base64,${file.base64}`}
+                                      alt={file.name}
+                                      className="w-8 h-8 object-cover rounded"
+                                    />
+                                  ) : (
+                                    <FileIcon className="w-4 h-4 text-slate-400" />
+                                  )}
+                                  <span className="flex-1 text-xs text-slate-300 light:text-slate-700 truncate">
+                                    {file.name}
+                                  </span>
+                                  <button
+                                    type="button"
+                                    onClick={() => removeFile(index)}
+                                    className="p-1 text-slate-500 hover:text-red-400 transition-colors"
+                                  >
+                                    <X className="w-3.5 h-3.5" />
+                                  </button>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        ) : (
+                          <div className="p-2 border border-dashed border-slate-700 light:border-slate-300 rounded-lg text-center">
+                            <p className="text-xs text-slate-500 light:text-slate-600">
+                              支持图片和 PDF
+                            </p>
+                          </div>
+                        )}
+                      </div>
+
+                      <Button className="w-full" onClick={handleRun} loading={running}>
+                        <Play className="w-4 h-4" />
+                        <span>运行</span>
+                      </Button>
+
+                      {/* Output */}
+                      <div className="space-y-2">
+                        <div className="flex items-center justify-between">
+                          <label className="block text-sm font-medium text-slate-300 light:text-slate-700">
+                            输出结果
+                          </label>
+                          <button
+                            type="button"
+                            onClick={() => setRenderMarkdown(!renderMarkdown)}
+                            className={`text-xs px-2 py-1 rounded transition-colors ${
+                              renderMarkdown
+                                ? 'bg-cyan-500/20 text-cyan-400'
+                                : 'bg-slate-700 light:bg-slate-200 text-slate-400 light:text-slate-600 hover:text-slate-300 light:hover:text-slate-800'
+                            }`}
+                          >
+                            {renderMarkdown ? 'Markdown' : '纯文本'}
+                          </button>
+                        </div>
+                        <div className="min-h-[300px] max-h-[500px] p-3 bg-slate-800/50 light:bg-white border border-slate-700 light:border-slate-300 rounded-lg text-sm text-slate-300 light:text-slate-700 overflow-y-auto">
+                          {running ? (
+                            <div className="flex items-center gap-2 text-slate-500 light:text-slate-600">
+                              <Loader2 className="w-4 h-4 animate-spin" />
+                              <span>生成中...</span>
+                            </div>
+                          ) : testOutput ? (
+                            renderMarkdown ? (
+                              <MarkdownRenderer content={testOutput} />
+                            ) : (
+                              <pre className="whitespace-pre-wrap font-mono">{testOutput}</pre>
+                            )
+                          ) : (
+                            <span className="text-slate-500 light:text-slate-600">点击运行查看结果</span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </>
+              )}
+
+              {activeTab === 'observe' && selectedPrompt && (
+                <div className="flex-1 overflow-hidden">
+                  <PromptObserver
+                    promptId={selectedPrompt.id}
+                    models={models}
+                  />
                 </div>
-              </div>
+              )}
+
+              {activeTab === 'optimize' && (
+                <div className="flex-1 p-6">
+                  <PromptOptimizer
+                    messages={promptMessages}
+                    content={promptContent}
+                    models={models}
+                    providers={providers}
+                    selectedModelId={optimizeModelId}
+                    onModelChange={setOptimizeModelId}
+                    onApplySuggestion={(suggestion) => {
+                      if (!suggestion.originalText || !suggestion.suggestedText) return;
+
+                      if (suggestion.messageIndex !== undefined && promptMessages[suggestion.messageIndex]) {
+                        const newMessages = [...promptMessages];
+                        newMessages[suggestion.messageIndex] = {
+                          ...newMessages[suggestion.messageIndex],
+                          content: newMessages[suggestion.messageIndex].content.replace(
+                            suggestion.originalText,
+                            suggestion.suggestedText
+                          ),
+                        };
+                        setPromptMessages(newMessages);
+                      } else {
+                        const newMessages = promptMessages.map((msg) => ({
+                          ...msg,
+                          content: msg.content.replace(suggestion.originalText!, suggestion.suggestedText!),
+                        }));
+                        setPromptMessages(newMessages);
+                      }
+                      showToast('success', '建议已应用');
+                    }}
+                    onOptimize={handleOptimize}
+                    isOptimizing={isOptimizing}
+                    analysisResult={analysisResult}
+                  />
+                </div>
+              )}
             </div>
           </>
         ) : (
@@ -752,6 +1262,7 @@ export function PromptsPage() {
         )}
       </div>
 
+      {/* New Prompt Modal */}
       <Modal isOpen={showNewPrompt} onClose={() => setShowNewPrompt(false)} title="新建 Prompt">
         <div className="space-y-4">
           <Input
@@ -772,6 +1283,7 @@ export function PromptsPage() {
         </div>
       </Modal>
 
+      {/* Version History Modal */}
       <Modal
         isOpen={showVersions}
         onClose={() => setShowVersions(false)}
@@ -782,19 +1294,19 @@ export function PromptsPage() {
           {versions.map((version) => (
             <div
               key={version.id}
-              className="flex items-center justify-between p-4 bg-slate-800/50 border border-slate-700 rounded-lg"
+              className="flex items-center justify-between p-4 bg-slate-800/50 light:bg-slate-100 border border-slate-700 light:border-slate-200 rounded-lg"
             >
               <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-lg bg-slate-700 flex items-center justify-center">
-                  <span className="text-sm font-medium text-slate-300">
+                <div className="w-10 h-10 rounded-lg bg-slate-700 light:bg-slate-200 flex items-center justify-center">
+                  <span className="text-sm font-medium text-slate-300 light:text-slate-700">
                     v{version.version}
                   </span>
                 </div>
                 <div>
-                  <p className="text-sm font-medium text-slate-200">
+                  <p className="text-sm font-medium text-slate-200 light:text-slate-800">
                     {version.commit_message || `Version ${version.version}`}
                   </p>
-                  <p className="text-xs text-slate-500 flex items-center gap-1 mt-1">
+                  <p className="text-xs text-slate-500 light:text-slate-600 flex items-center gap-1 mt-1">
                     <Clock className="w-3 h-3" />
                     {new Date(version.created_at).toLocaleString('zh-CN')}
                   </p>
@@ -806,11 +1318,12 @@ export function PromptsPage() {
             </div>
           ))}
           {versions.length === 0 && (
-            <p className="text-center text-slate-500 py-8">暂无历史版本</p>
+            <p className="text-center text-slate-500 light:text-slate-600 py-8">暂无历史版本</p>
           )}
         </div>
       </Modal>
 
+      {/* Compare Modal */}
       <Modal
         isOpen={showCompare}
         onClose={() => {
@@ -821,13 +1334,13 @@ export function PromptsPage() {
         size="xl"
       >
         <div className="space-y-4">
-          <div className="flex gap-2 p-1 bg-slate-800 rounded-lg">
+          <div className="flex gap-2 p-1 bg-slate-800 light:bg-slate-100 rounded-lg">
             <button
               onClick={() => setCompareMode('models')}
               className={`flex-1 px-4 py-2 text-sm font-medium rounded-md transition-colors ${
                 compareMode === 'models'
                   ? 'bg-cyan-500 text-white'
-                  : 'text-slate-400 hover:text-white'
+                  : 'text-slate-400 light:text-slate-600 hover:text-white light:hover:text-slate-900'
               }`}
             >
               相同版本不同模型
@@ -837,7 +1350,7 @@ export function PromptsPage() {
               className={`flex-1 px-4 py-2 text-sm font-medium rounded-md transition-colors ${
                 compareMode === 'versions'
                   ? 'bg-cyan-500 text-white'
-                  : 'text-slate-400 hover:text-white'
+                  : 'text-slate-400 light:text-slate-600 hover:text-white light:hover:text-slate-900'
               }`}
             >
               相同模型不同版本
@@ -920,19 +1433,19 @@ export function PromptsPage() {
           )}
 
           <div className="space-y-2">
-            <label className="block text-sm font-medium text-slate-300">测试输入</label>
+            <label className="block text-sm font-medium text-slate-300 light:text-slate-700">测试输入</label>
             <textarea
               value={compareInput}
               onChange={(e) => setCompareInput(e.target.value)}
               placeholder="输入测试内容..."
               rows={3}
-              className="w-full p-3 bg-slate-800 border border-slate-700 rounded-lg text-sm text-slate-200 placeholder-slate-500 resize-none focus:outline-none focus:border-cyan-500"
+              className="w-full p-3 bg-slate-800 light:bg-white border border-slate-700 light:border-slate-300 rounded-lg text-sm text-slate-200 light:text-slate-800 placeholder-slate-500 light:placeholder-slate-400 resize-none focus:outline-none focus:border-cyan-500"
             />
           </div>
 
           <div className="space-y-2">
             <div className="flex items-center justify-between">
-              <label className="block text-sm font-medium text-slate-300">附件</label>
+              <label className="block text-sm font-medium text-slate-300 light:text-slate-700">附件</label>
               <button
                 type="button"
                 onClick={() => compareFileInputRef.current?.click()}
@@ -957,7 +1470,7 @@ export function PromptsPage() {
                   return (
                     <div
                       key={index}
-                      className="flex items-center gap-2 p-2 bg-slate-800 border border-slate-700 rounded-lg"
+                      className="flex items-center gap-2 p-2 bg-slate-800 light:bg-slate-100 border border-slate-700 light:border-slate-300 rounded-lg"
                     >
                       {file.type.startsWith('image/') ? (
                         <img
@@ -968,7 +1481,7 @@ export function PromptsPage() {
                       ) : (
                         <FileIcon className="w-4 h-4 text-slate-400" />
                       )}
-                      <span className="text-xs text-slate-300 truncate max-w-[120px]">
+                      <span className="text-xs text-slate-300 light:text-slate-700 truncate max-w-[120px]">
                         {file.name}
                       </span>
                       <button
@@ -991,7 +1504,7 @@ export function PromptsPage() {
           </Button>
 
           {(compareResults.left || compareResults.right) && (
-            <div className="grid grid-cols-2 gap-4 pt-4 border-t border-slate-700">
+            <div className="grid grid-cols-2 gap-4 pt-4 border-t border-slate-700 light:border-slate-200">
               <div className="space-y-2">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
@@ -1002,7 +1515,7 @@ export function PromptsPage() {
                     </Badge>
                   </div>
                   {compareResults.left && !compareResults.left.error && (
-                    <div className="flex items-center gap-2 text-xs text-slate-500">
+                    <div className="flex items-center gap-2 text-xs text-slate-500 light:text-slate-600">
                       <Clock className="w-3 h-3" />
                       <span>{(compareResults.left.latency / 1000).toFixed(2)}s</span>
                       <span>|</span>
@@ -1010,16 +1523,16 @@ export function PromptsPage() {
                     </div>
                   )}
                 </div>
-                <div className="h-96 p-3 bg-slate-800/50 border border-slate-700 rounded-lg overflow-y-auto">
+                <div className="h-96 p-3 bg-slate-800/50 light:bg-slate-100 border border-slate-700 light:border-slate-200 rounded-lg overflow-y-auto">
                   {compareResults.left?.error ? (
-                    <div className="text-red-400 text-sm">
+                    <div className="text-red-400 light:text-red-600 text-sm">
                       <p className="font-medium">错误</p>
                       <p className="mt-1 text-xs">{compareResults.left.error}</p>
                     </div>
                   ) : compareResults.left ? (
                     <MarkdownRenderer content={compareResults.left.content} />
                   ) : (
-                    <div className="flex items-center gap-2 text-slate-500">
+                    <div className="flex items-center gap-2 text-slate-500 light:text-slate-600">
                       <Loader2 className="w-4 h-4 animate-spin" />
                       <span>运行中...</span>
                     </div>
@@ -1037,7 +1550,7 @@ export function PromptsPage() {
                     </Badge>
                   </div>
                   {compareResults.right && !compareResults.right.error && (
-                    <div className="flex items-center gap-2 text-xs text-slate-500">
+                    <div className="flex items-center gap-2 text-xs text-slate-500 light:text-slate-600">
                       <Clock className="w-3 h-3" />
                       <span>{(compareResults.right.latency / 1000).toFixed(2)}s</span>
                       <span>|</span>
@@ -1045,16 +1558,16 @@ export function PromptsPage() {
                     </div>
                   )}
                 </div>
-                <div className="h-96 p-3 bg-slate-800/50 border border-slate-700 rounded-lg overflow-y-auto">
+                <div className="h-96 p-3 bg-slate-800/50 light:bg-slate-100 border border-slate-700 light:border-slate-200 rounded-lg overflow-y-auto">
                   {compareResults.right?.error ? (
-                    <div className="text-red-400 text-sm">
+                    <div className="text-red-400 light:text-red-600 text-sm">
                       <p className="font-medium">错误</p>
                       <p className="mt-1 text-xs">{compareResults.right.error}</p>
                     </div>
                   ) : compareResults.right ? (
                     <MarkdownRenderer content={compareResults.right.content} />
                   ) : (
-                    <div className="flex items-center gap-2 text-slate-500">
+                    <div className="flex items-center gap-2 text-slate-500 light:text-slate-600">
                       <Loader2 className="w-4 h-4 animate-spin" />
                       <span>运行中...</span>
                     </div>

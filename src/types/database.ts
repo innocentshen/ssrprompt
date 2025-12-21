@@ -30,6 +30,8 @@ export interface Prompt {
   description: string;
   content: string;
   variables: PromptVariable[];
+  messages: PromptMessage[];
+  config: PromptConfig;
   current_version: number;
   default_model_id: string | null;
   order_index: number;
@@ -37,11 +39,60 @@ export interface Prompt {
   updated_at: string;
 }
 
+export type PromptMessageRole = 'system' | 'user' | 'assistant';
+
+export interface PromptMessage {
+  id: string;
+  role: PromptMessageRole;
+  content: string;
+}
+
+export type PromptVariableType = 'string' | 'number' | 'boolean' | 'array' | 'object';
+
 export interface PromptVariable {
   name: string;
+  type: PromptVariableType;
   description?: string;
   default_value?: string;
+  required?: boolean;
 }
+
+export interface PromptConfig {
+  temperature: number;
+  top_p: number;
+  frequency_penalty: number;
+  presence_penalty: number;
+  max_tokens: number;
+  output_schema?: OutputSchema;
+}
+
+// Structured Output Types
+export type SchemaFieldType = 'string' | 'number' | 'boolean' | 'array' | 'object';
+
+export interface SchemaField {
+  name: string;
+  type: SchemaFieldType;
+  description?: string;
+  required: boolean;
+  enum?: string[];
+  items?: SchemaField;
+  properties?: SchemaField[];
+}
+
+export interface OutputSchema {
+  enabled: boolean;
+  name: string;
+  strict: boolean;
+  fields: SchemaField[];
+}
+
+export const DEFAULT_PROMPT_CONFIG: PromptConfig = {
+  temperature: 1,
+  top_p: 0.7,
+  frequency_penalty: 0,
+  presence_penalty: 0,
+  max_tokens: 4096,
+};
 
 export interface PromptVersion {
   id: string;
