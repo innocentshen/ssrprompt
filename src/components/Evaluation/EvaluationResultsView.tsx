@@ -31,6 +31,11 @@ export function EvaluationResultsView({
     return testCase?.expected_output || null;
   };
 
+  const getTestCaseNotes = (testCaseId: string) => {
+    const testCase = testCases.find((tc) => tc.id === testCaseId);
+    return testCase?.notes || null;
+  };
+
   const toggleOutputExpanded = (resultId: string) => {
     setExpandedOutputs((prev) => {
       const next = new Set(prev);
@@ -244,6 +249,17 @@ export function EvaluationResultsView({
                             )}
                           </div>
                         ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {getTestCaseNotes(result.test_case_id) && (
+                    <div>
+                      <p className="text-xs text-slate-500 light:text-slate-600 mb-2">测试备注</p>
+                      <div className="p-3 bg-slate-800/50 light:bg-amber-50 rounded border border-slate-700 light:border-amber-200">
+                        <p className="text-sm text-slate-400 light:text-amber-700 whitespace-pre-wrap">
+                          {getTestCaseNotes(result.test_case_id)}
+                        </p>
                       </div>
                     </div>
                   )}

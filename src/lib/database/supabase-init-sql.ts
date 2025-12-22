@@ -82,6 +82,7 @@ CREATE TABLE IF NOT EXISTS test_cases (
   input_variables jsonb NOT NULL DEFAULT '{}',
   attachments jsonb NOT NULL DEFAULT '[]',
   expected_output text,
+  notes text,
   order_index integer NOT NULL DEFAULT 0,
   created_at timestamptz DEFAULT now()
 );

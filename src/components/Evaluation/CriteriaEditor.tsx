@@ -77,21 +77,23 @@ function EditableCriterion({
   return (
     <div className="border border-slate-700 light:border-slate-200 rounded-lg bg-slate-800/30 light:bg-white overflow-hidden light:shadow-sm">
       <div className="flex items-center gap-3 p-3">
-        <button
+        <div
           onClick={onToggleExpand}
-          className="p-1 hover:bg-slate-700 light:hover:bg-slate-100 rounded transition-colors"
+          className="flex items-center gap-3 flex-1 min-w-0 cursor-pointer"
         >
-          {isExpanded ? (
-            <ChevronDown className="w-4 h-4 text-slate-400 light:text-slate-500" />
-          ) : (
-            <ChevronRight className="w-4 h-4 text-slate-400 light:text-slate-500" />
-          )}
-        </button>
-        <div className="flex-1 min-w-0">
-          <p className="text-sm font-medium text-slate-200 light:text-slate-800">{criterion.name}</p>
-          {criterion.description && (
-            <p className="text-xs text-slate-500 light:text-slate-600 truncate">{criterion.description}</p>
-          )}
+          <div className="p-1 hover:bg-slate-700 light:hover:bg-slate-100 rounded transition-colors">
+            {isExpanded ? (
+              <ChevronDown className="w-4 h-4 text-slate-400 light:text-slate-500" />
+            ) : (
+              <ChevronRight className="w-4 h-4 text-slate-400 light:text-slate-500" />
+            )}
+          </div>
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-medium text-slate-200 light:text-slate-800">{criterion.name}</p>
+            {criterion.description && (
+              <p className="text-xs text-slate-500 light:text-slate-600 truncate">{criterion.description}</p>
+            )}
+          </div>
         </div>
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-2">

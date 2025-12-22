@@ -7,3 +7,6 @@ export type { DebugRun } from './DebugHistory';
 export { PromptOptimizer } from './PromptOptimizer';
 export { PromptObserver } from './PromptObserver';
 export { StructuredOutputEditor } from './StructuredOutputEditor';
+export { ThinkingBlock } from './ThinkingBlock';
+export { AttachmentPreview, AttachmentList } from './AttachmentPreview';
+export { AttachmentModal } from './AttachmentModal';

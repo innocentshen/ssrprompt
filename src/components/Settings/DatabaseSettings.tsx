@@ -297,6 +297,16 @@ export function DatabaseSettings() {
 
       {config.provider === 'mysql' && (
         <div className="space-y-4 p-4 bg-slate-800/30 light:bg-slate-50 rounded-lg border border-slate-700 light:border-slate-200">
+          <div className="p-3 bg-amber-500/10 light:bg-amber-50 border border-amber-500/20 light:border-amber-200 rounded-lg">
+            <p className="text-sm font-medium text-amber-400 light:text-amber-700 mb-2">
+              使用自建 MySQL 数据库需要注意：
+            </p>
+            <ul className="text-xs text-amber-400/80 light:text-amber-600 space-y-1 list-disc list-inside">
+              <li>您需要自行部署后端服务来连接 MySQL 数据库</li>
+              <li>请参考项目 <code className="bg-amber-500/20 light:bg-amber-100 px-1 rounded">server/</code> 目录中的后端代码</li>
+              <li>如果您没有后端开发经验，建议使用 Supabase（无需后端）</li>
+            </ul>
+          </div>
           <div className="grid grid-cols-2 gap-4">
             <Input
               label="主机地址"

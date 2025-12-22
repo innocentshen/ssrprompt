@@ -1,7 +1,8 @@
 import { useState, useRef, useEffect } from 'react';
-import { Trash2, Paperclip, X, FileText, Image, Check, Loader2, Eye, EyeOff, Maximize2 } from 'lucide-react';
+import { Trash2, Paperclip, X, FileText, Image, Check, Loader2, Eye, EyeOff, Maximize2, Code, File } from 'lucide-react';
 import { Button, Modal, MarkdownRenderer } from '../ui';
 import type { TestCase, FileAttachmentData } from '../../types';
+import { getFileInputAccept, isSupportedFileType, getFileIconType } from '../../lib/file-utils';
 
 interface TestCaseEditorProps {
   testCase: TestCase;
@@ -97,6 +98,9 @@ export function TestCaseEditor({
     const newAttachments: FileAttachmentData[] = [];
 
     for (const file of Array.from(files)) {
+      if (!isSupportedFileType(file)) {
+        continue; // Skip unsupported files
+      }
       const base64 = await fileToBase64(file);
       newAttachments.push({
         name: file.name,
@@ -142,9 +146,20 @@ export function TestCaseEditor({
     });
   };
 
-  const getFileIcon = (type: string) => {
-    if (type.startsWith('image/')) return Image;
-    return FileText;
+  const getFileIcon = (attachment: { type: string; name?: string }) => {
+    const iconType = getFileIconType(attachment);
+    switch (iconType) {
+      case 'image':
+        return Image;
+      case 'pdf':
+        return FileText;
+      case 'code':
+        return Code;
+      case 'text':
+        return FileText;
+      default:
+        return File;
+    }
   };
 
   const openExpandModal = (field: 'input' | 'expected') => {
@@ -295,11 +310,11 @@ export function TestCaseEditor({
 
           <div>
             <label className="block text-sm font-medium text-slate-300 light:text-slate-700 mb-2">
-              附件 (图片/PDF)
+              附件
             </label>
             <div className="space-y-2">
               {testCase.attachments.map((attachment, i) => {
-                const Icon = getFileIcon(attachment.type);
+                const Icon = getFileIcon(attachment);
                 return (
                   <div
                     key={i}
@@ -322,7 +337,7 @@ export function TestCaseEditor({
                 ref={fileInputRef}
                 type="file"
                 onChange={handleFileSelect}
-                accept="image/*,.pdf"
+                accept={getFileInputAccept()}
                 multiple
                 className="hidden"
               />
@@ -383,6 +398,23 @@ export function TestCaseEditor({
                 className="w-full px-3 py-2 bg-slate-800 light:bg-white border border-slate-600 light:border-slate-300 rounded-lg text-slate-200 light:text-slate-800 placeholder-slate-500 light:placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-cyan-500/50 focus:border-cyan-500 resize-y text-sm font-mono min-h-[56px]"
               />
             )}
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-slate-300 light:text-slate-700 mb-2">
+              备注 (可选)
+            </label>
+            <LocalInput
+              as="textarea"
+              value={testCase.notes || ''}
+              onChange={(value) => handleUpdate({ notes: value || null })}
+              placeholder="添加备注信息，如测试目的、注意事项等（不会发送给 AI）..."
+              rows={2}
+              className="w-full px-3 py-2 bg-slate-800 light:bg-white border border-slate-600 light:border-slate-300 rounded-lg text-slate-200 light:text-slate-800 placeholder-slate-500 light:placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-cyan-500/50 focus:border-cyan-500 resize-y text-sm min-h-[56px]"
+            />
+            <p className="text-xs text-slate-500 light:text-slate-600 mt-1">
+              备注内容仅供参考，不会在评测时发送给 AI
+            </p>
           </div>
 
           <p className="text-xs text-slate-500 light:text-slate-600 flex items-center gap-1">

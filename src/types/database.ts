@@ -142,6 +142,7 @@ export interface TestCase {
   input_variables: Record<string, string>;
   attachments: FileAttachmentData[];
   expected_output: string | null;
+  notes: string | null;
   order_index: number;
   created_at: string;
 }

@@ -22,14 +22,17 @@ import {
   Check,
   Cloud,
   CloudOff,
+  Copy,
+  Maximize2,
 } from 'lucide-react';
 import { Button, Input, Modal, Badge, Select, useToast, MarkdownRenderer, Tabs, Collapsible } from '../components/ui';
-import { MessageList, ParameterPanel, VariableEditor, DebugHistory, PromptOptimizer, PromptObserver, StructuredOutputEditor } from '../components/Prompt';
+import { MessageList, ParameterPanel, VariableEditor, DebugHistory, PromptOptimizer, PromptObserver, StructuredOutputEditor, ThinkingBlock, AttachmentModal } from '../components/Prompt';
 import type { DebugRun } from '../components/Prompt';
 import { getDatabase } from '../lib/database';
-import { callAIModel, fileToBase64, type FileAttachment } from '../lib/ai-service';
+import { callAIModel, streamAIModel, fileToBase64, extractThinking, type FileAttachment } from '../lib/ai-service';
 import { analyzePrompt, type PromptAnalysisResult } from '../lib/prompt-analyzer';
 import { toResponseFormat } from '../lib/schema-utils';
+import { getFileInputAccept, isSupportedFileType } from '../lib/file-utils';
 import type { Prompt, Model, Provider, PromptVersion, PromptMessage, PromptConfig, PromptVariable } from '../types';
 import { DEFAULT_PROMPT_CONFIG } from '../types/database';
 
@@ -95,9 +98,15 @@ export function PromptsPage() {
   const [autoSaveStatus, setAutoSaveStatus] = useState<'saved' | 'saving' | 'unsaved' | 'error'>('saved');
   const [debugRuns, setDebugRuns] = useState<DebugRun[]>([]);
   const [selectedDebugRun, setSelectedDebugRun] = useState<DebugRun | null>(null);
+  const [showDebugDetail, setShowDebugDetail] = useState<DebugRun | null>(null);
+  const [debugDetailCopied, setDebugDetailCopied] = useState<'input' | 'output' | null>(null);
+  const [debugDetailExpanded, setDebugDetailExpanded] = useState<{ field: 'input' | 'output'; content: string } | null>(null);
   const [isOptimizing, setIsOptimizing] = useState(false);
   const [analysisResult, setAnalysisResult] = useState<PromptAnalysisResult | null>(null);
   const [optimizeModelId, setOptimizeModelId] = useState('');
+  const [thinkingContent, setThinkingContent] = useState('');
+  const [isThinking, setIsThinking] = useState(false);
+  const [previewAttachment, setPreviewAttachment] = useState<FileAttachment | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const compareFileInputRef = useRef<HTMLInputElement>(null);
   const cancelAutoSaveRef = useRef<(() => void) | null>(null);
@@ -396,9 +405,12 @@ export function PromptsPage() {
 
     setRunning(true);
     setTestOutput('');
+    setThinkingContent('');
+    setIsThinking(false);
 
     const runId = `run_${Date.now()}`;
     const startTime = Date.now();
+    let thinkingStartTime = 0;
 
     try {
       // Build options with parameters and response format
@@ -416,82 +428,122 @@ export function PromptsPage() {
         options.responseFormat = toResponseFormat(promptConfig.output_schema);
       }
 
-      const result = await callAIModel(
+      let fullContent = '';
+      let tokensInput = 0;
+      let tokensOutput = 0;
+      let accumulatedThinking = '';
+
+      await streamAIModel(
         provider,
         model.name,
         finalPrompt,
+        {
+          onToken: (token) => {
+            fullContent += token;
+
+            // 实时检测思考内容
+            const { thinking, content } = extractThinking(fullContent);
+            if (thinking && thinking !== accumulatedThinking) {
+              if (!isThinking) {
+                setIsThinking(true);
+                thinkingStartTime = Date.now();
+              }
+              accumulatedThinking = thinking;
+              setThinkingContent(thinking);
+            }
+
+            // 显示去除思考标签后的内容
+            setTestOutput(content);
+          },
+          onComplete: async (finalContent) => {
+            const latencyMs = Date.now() - startTime;
+            const thinkingDuration = thinkingStartTime > 0 ? Date.now() - thinkingStartTime : 0;
+
+            // 提取最终的思考内容
+            const { thinking, content } = extractThinking(finalContent);
+            setThinkingContent(thinking);
+            setIsThinking(false);
+
+            const outputText = `${content}\n\n---\n**处理时间:** ${(latencyMs / 1000).toFixed(2)}s`;
+            setTestOutput(outputText);
+
+            // Add to debug history with attachments and thinking
+            const newRun: DebugRun = {
+              id: runId,
+              input: testInput,
+              inputVariables: {},
+              output: content,
+              status: 'success',
+              latencyMs,
+              tokensInput,
+              tokensOutput,
+              timestamp: new Date(),
+              attachments: attachedFiles.length > 0 ? [...attachedFiles] : undefined,
+              thinking: thinking || undefined,
+            };
+            setDebugRuns((prev) => [newRun, ...prev.slice(0, 19)]);
+
+            await getDatabase().from('traces').insert({
+              prompt_id: selectedPrompt?.id,
+              model_id: model.id,
+              input: finalPrompt + (testInput ? `\n\n用户输入: ${testInput}` : ''),
+              output: finalContent,
+              tokens_input: tokensInput,
+              tokens_output: tokensOutput,
+              latency_ms: latencyMs,
+              status: 'success',
+              metadata: {
+                test_input: testInput,
+                files: attachedFiles.map((f) => ({ name: f.name, type: f.type })),
+              },
+            });
+
+            setRunning(false);
+            showToast('success', '运行完成');
+          },
+          onError: async (error) => {
+            setTestOutput(`**[错误]**\n\n${error}\n\n请检查:\n1. API Key 是否正确配置\n2. 模型名称是否正确\n3. Base URL 是否可访问\n4. 网络连接是否正常`);
+
+            // Add to debug history
+            const newRun: DebugRun = {
+              id: runId,
+              input: testInput,
+              inputVariables: {},
+              output: '',
+              status: 'error',
+              errorMessage: error,
+              latencyMs: Date.now() - startTime,
+              tokensInput: 0,
+              tokensOutput: 0,
+              timestamp: new Date(),
+            };
+            setDebugRuns((prev) => [newRun, ...prev.slice(0, 19)]);
+
+            await getDatabase().from('traces').insert({
+              prompt_id: selectedPrompt?.id,
+              model_id: model.id,
+              input: finalPrompt + (testInput ? `\n\n用户输入: ${testInput}` : ''),
+              output: error,
+              tokens_input: 0,
+              tokens_output: 0,
+              latency_ms: 0,
+              status: 'error',
+              metadata: { test_input: testInput, error },
+            });
+
+            setRunning(false);
+            showToast('error', '运行失败: ' + error);
+          },
+        },
         testInput,
         attachedFiles.length > 0 ? attachedFiles : undefined,
         options
       );
-
-      const outputText = `${result.content}\n\n---\n**处理时间:** ${(result.latencyMs / 1000).toFixed(2)}s\n**令牌使用:** ${result.tokensInput} 输入 / ${result.tokensOutput} 输出 (共 ${result.tokensInput + result.tokensOutput})`;
-      setTestOutput(outputText);
-
-      // Add to debug history
-      const newRun: DebugRun = {
-        id: runId,
-        input: testInput,
-        inputVariables: {},
-        output: result.content,
-        status: 'success',
-        latencyMs: result.latencyMs,
-        tokensInput: result.tokensInput,
-        tokensOutput: result.tokensOutput,
-        timestamp: new Date(),
-      };
-      setDebugRuns((prev) => [newRun, ...prev.slice(0, 19)]);
-
-      await getDatabase().from('traces').insert({
-        prompt_id: selectedPrompt?.id,
-        model_id: model.id,
-        input: finalPrompt + (testInput ? `\n\n用户输入: ${testInput}` : ''),
-        output: result.content,
-        tokens_input: result.tokensInput,
-        tokens_output: result.tokensOutput,
-        latency_ms: result.latencyMs,
-        status: 'success',
-        metadata: {
-          test_input: testInput,
-          files: attachedFiles.map((f) => ({ name: f.name, type: f.type })),
-        },
-      });
-
-      showToast('success', '运行完成');
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : '未知错误';
       setTestOutput(`**[错误]**\n\n${errorMessage}\n\n请检查:\n1. API Key 是否正确配置\n2. 模型名称是否正确\n3. Base URL 是否可访问\n4. 网络连接是否正常`);
-
-      // Add to debug history
-      const newRun: DebugRun = {
-        id: runId,
-        input: testInput,
-        inputVariables: {},
-        output: '',
-        status: 'error',
-        errorMessage,
-        latencyMs: Date.now() - startTime,
-        tokensInput: 0,
-        tokensOutput: 0,
-        timestamp: new Date(),
-      };
-      setDebugRuns((prev) => [newRun, ...prev.slice(0, 19)]);
-
-      await getDatabase().from('traces').insert({
-        prompt_id: selectedPrompt?.id,
-        model_id: model.id,
-        input: finalPrompt + (testInput ? `\n\n用户输入: ${testInput}` : ''),
-        output: errorMessage,
-        tokens_input: 0,
-        tokens_output: 0,
-        latency_ms: 0,
-        status: 'error',
-        metadata: { test_input: testInput, error: errorMessage },
-      });
-
-      showToast('error', '运行失败: ' + errorMessage);
-    } finally {
       setRunning(false);
+      showToast('error', '运行失败: ' + errorMessage);
     }
   };
 
@@ -571,6 +623,29 @@ export function PromptsPage() {
     setSelectedDebugRun(null);
   };
 
+  const handleDeleteDebugRun = (runId: string) => {
+    setDebugRuns((prev) => prev.filter((run) => run.id !== runId));
+    if (selectedDebugRun?.id === runId) {
+      setSelectedDebugRun(null);
+    }
+  };
+
+  const handleViewDebugDetail = (run: DebugRun) => {
+    setShowDebugDetail(run);
+    setDebugDetailCopied(null);
+    setDebugDetailExpanded(null);
+  };
+
+  const handleDebugDetailCopy = async (text: string, field: 'input' | 'output') => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setDebugDetailCopied(field);
+      setTimeout(() => setDebugDetailCopied(null), 2000);
+    } catch {
+      showToast('error', '复制失败');
+    }
+  };
+
   const handleOptimize = async () => {
     setIsOptimizing(true);
     setAnalysisResult(null);
@@ -644,14 +719,13 @@ export function PromptsPage() {
     if (!files || files.length === 0) return;
 
     const maxSize = 20 * 1024 * 1024;
-    const allowedTypes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'application/pdf'];
 
     for (const file of Array.from(files)) {
       if (file.size > maxSize) {
         showToast('error', `${file.name} 超过 20MB 限制`);
         continue;
       }
-      if (!allowedTypes.includes(file.type)) {
+      if (!isSupportedFileType(file)) {
         showToast('error', `${file.name} 不支持的文件类型`);
         continue;
       }
@@ -666,6 +740,29 @@ export function PromptsPage() {
 
     if (fileInputRef.current) {
       fileInputRef.current.value = '';
+    }
+  };
+
+  const handlePaste = async (e: React.ClipboardEvent) => {
+    const items = e.clipboardData.items;
+    for (const item of Array.from(items)) {
+      if (item.type.startsWith('image/')) {
+        e.preventDefault();
+        const file = item.getAsFile();
+        if (file) {
+          if (file.size > 20 * 1024 * 1024) {
+            showToast('error', '粘贴的图片超过 20MB 限制');
+            continue;
+          }
+          try {
+            const attachment = await fileToBase64(file);
+            setAttachedFiles((prev) => [...prev, attachment]);
+            showToast('success', '图片已添加');
+          } catch {
+            showToast('error', '无法读取粘贴的图片');
+          }
+        }
+      }
     }
   };
 
@@ -1038,7 +1135,10 @@ export function PromptsPage() {
                         runs={debugRuns}
                         onReplay={handleReplayDebugRun}
                         onClear={handleClearDebugHistory}
+                        onDelete={handleDeleteDebugRun}
                         onSelect={setSelectedDebugRun}
+                        onViewDetails={handleViewDebugDetail}
+                        onPreviewAttachment={setPreviewAttachment}
                         selectedRunId={selectedDebugRun?.id}
                       />
                     </div>
@@ -1089,7 +1189,8 @@ export function PromptsPage() {
                         <textarea
                           value={testInput}
                           onChange={(e) => setTestInput(e.target.value)}
-                          placeholder="输入测试内容..."
+                          onPaste={handlePaste}
+                          placeholder="输入测试内容...（支持粘贴图片）"
                           rows={4}
                           className="w-full p-3 bg-slate-800 light:bg-white border border-slate-700 light:border-slate-300 rounded-lg text-sm text-slate-200 light:text-slate-800 placeholder-slate-500 light:placeholder-slate-400 resize-none focus:outline-none focus:border-cyan-500"
                         />
@@ -1113,7 +1214,7 @@ export function PromptsPage() {
                         <input
                           ref={fileInputRef}
                           type="file"
-                          accept="image/*,application/pdf"
+                          accept={getFileInputAccept()}
                           multiple
                           onChange={handleFileSelect}
                           className="hidden"
@@ -1153,7 +1254,7 @@ export function PromptsPage() {
                         ) : (
                           <div className="p-2 border border-dashed border-slate-700 light:border-slate-300 rounded-lg text-center">
                             <p className="text-xs text-slate-500 light:text-slate-600">
-                              支持图片和 PDF
+                              支持图片、PDF、txt、md、json、csv、xml、yaml
                             </p>
                           </div>
                         )}
@@ -1163,6 +1264,14 @@ export function PromptsPage() {
                         <Play className="w-4 h-4" />
                         <span>运行</span>
                       </Button>
+
+                      {/* Thinking Block */}
+                      {(thinkingContent || isThinking) && (
+                        <ThinkingBlock
+                          content={thinkingContent}
+                          isStreaming={isThinking}
+                        />
+                      )}
 
                       {/* Output */}
                       <div className="space-y-2">
@@ -1578,6 +1687,166 @@ export function PromptsPage() {
           )}
         </div>
       </Modal>
+
+      {/* Debug Detail Modal */}
+      <Modal
+        isOpen={!!showDebugDetail}
+        onClose={() => {
+          setShowDebugDetail(null);
+          setDebugDetailExpanded(null);
+        }}
+        title="调试详情"
+        size="lg"
+      >
+        {showDebugDetail && (
+          <div className="space-y-6">
+            <div className="grid grid-cols-2 gap-4">
+              <div className="p-3 bg-slate-800/50 light:bg-slate-100 border border-slate-700 light:border-slate-200 rounded-lg">
+                <p className="text-xs text-slate-500 light:text-slate-600 mb-1">状态</p>
+                <Badge variant={showDebugDetail.status === 'success' ? 'success' : 'error'}>
+                  {showDebugDetail.status === 'success' ? '成功' : '失败'}
+                </Badge>
+              </div>
+              <div className="p-3 bg-slate-800/50 light:bg-slate-100 border border-slate-700 light:border-slate-200 rounded-lg">
+                <p className="text-xs text-slate-500 light:text-slate-600 mb-1">延迟</p>
+                <p className="text-sm font-medium text-slate-200 light:text-slate-800">{showDebugDetail.latencyMs}ms</p>
+              </div>
+              <div className="p-3 bg-slate-800/50 light:bg-slate-100 border border-slate-700 light:border-slate-200 rounded-lg">
+                <p className="text-xs text-slate-500 light:text-slate-600 mb-1">输入 Tokens</p>
+                <p className="text-sm font-medium text-cyan-400 light:text-cyan-600">{showDebugDetail.tokensInput}</p>
+              </div>
+              <div className="p-3 bg-slate-800/50 light:bg-slate-100 border border-slate-700 light:border-slate-200 rounded-lg">
+                <p className="text-xs text-slate-500 light:text-slate-600 mb-1">输出 Tokens</p>
+                <p className="text-sm font-medium text-teal-400 light:text-teal-600">{showDebugDetail.tokensOutput}</p>
+              </div>
+            </div>
+
+            <div>
+              <div className="flex items-center justify-between mb-2">
+                <h4 className="text-sm font-medium text-slate-300 light:text-slate-700">输入</h4>
+                <div className="flex items-center gap-1">
+                  <button
+                    onClick={() => setDebugDetailExpanded({ field: 'input', content: showDebugDetail.input })}
+                    className="p-1.5 rounded hover:bg-slate-700 light:hover:bg-slate-200 text-slate-400 light:text-slate-500 hover:text-slate-200 light:hover:text-slate-700 transition-colors"
+                    title="放大查看"
+                  >
+                    <Maximize2 className="w-4 h-4" />
+                  </button>
+                  <button
+                    onClick={() => handleDebugDetailCopy(showDebugDetail.input, 'input')}
+                    className="p-1.5 rounded hover:bg-slate-700 light:hover:bg-slate-200 text-slate-400 light:text-slate-500 hover:text-slate-200 light:hover:text-slate-700 transition-colors"
+                    title="复制"
+                  >
+                    {debugDetailCopied === 'input' ? (
+                      <Check className="w-4 h-4 text-emerald-400" />
+                    ) : (
+                      <Copy className="w-4 h-4" />
+                    )}
+                  </button>
+                </div>
+              </div>
+              <div className="p-4 bg-slate-800/50 light:bg-slate-100 border border-slate-700 light:border-slate-200 rounded-lg max-h-40 overflow-y-auto">
+                <MarkdownRenderer content={showDebugDetail.input} />
+              </div>
+            </div>
+
+            <div>
+              <div className="flex items-center justify-between mb-2">
+                <h4 className="text-sm font-medium text-slate-300 light:text-slate-700">输出</h4>
+                <div className="flex items-center gap-1">
+                  <button
+                    onClick={() => setDebugDetailExpanded({ field: 'output', content: showDebugDetail.output })}
+                    className="p-1.5 rounded hover:bg-slate-700 light:hover:bg-slate-200 text-slate-400 light:text-slate-500 hover:text-slate-200 light:hover:text-slate-700 transition-colors"
+                    title="放大查看"
+                  >
+                    <Maximize2 className="w-4 h-4" />
+                  </button>
+                  <button
+                    onClick={() => handleDebugDetailCopy(showDebugDetail.output, 'output')}
+                    className="p-1.5 rounded hover:bg-slate-700 light:hover:bg-slate-200 text-slate-400 light:text-slate-500 hover:text-slate-200 light:hover:text-slate-700 transition-colors"
+                    title="复制"
+                  >
+                    {debugDetailCopied === 'output' ? (
+                      <Check className="w-4 h-4 text-emerald-400" />
+                    ) : (
+                      <Copy className="w-4 h-4" />
+                    )}
+                  </button>
+                </div>
+              </div>
+              <div className="p-4 bg-slate-800/50 light:bg-slate-100 border border-slate-700 light:border-slate-200 rounded-lg max-h-40 overflow-y-auto">
+                {showDebugDetail.output ? (
+                  <MarkdownRenderer content={showDebugDetail.output} />
+                ) : (
+                  <span className="text-sm text-slate-500 light:text-slate-400">(空)</span>
+                )}
+              </div>
+            </div>
+
+            {showDebugDetail.errorMessage && (
+              <div>
+                <h4 className="text-sm font-medium text-rose-400 light:text-rose-600 mb-2">错误信息</h4>
+                <div className="p-4 bg-rose-500/10 light:bg-rose-50 border border-rose-500/30 light:border-rose-200 rounded-lg">
+                  <pre className="text-sm text-rose-300 light:text-rose-700 whitespace-pre-wrap font-mono">
+                    {showDebugDetail.errorMessage}
+                  </pre>
+                </div>
+              </div>
+            )}
+
+            <div className="pt-4 border-t border-slate-700 light:border-slate-200">
+              <p className="text-xs text-slate-500 light:text-slate-600">
+                运行时间: {showDebugDetail.timestamp.toLocaleString('zh-CN')}
+              </p>
+            </div>
+          </div>
+        )}
+      </Modal>
+
+      {/* Debug Detail Expanded Modal */}
+      <Modal
+        isOpen={!!debugDetailExpanded}
+        onClose={() => setDebugDetailExpanded(null)}
+        title={debugDetailExpanded?.field === 'input' ? '输入内容' : '输出内容'}
+        size="xl"
+      >
+        {debugDetailExpanded && (
+          <div className="space-y-4">
+            <div className="flex items-center justify-end">
+              <button
+                onClick={() => handleDebugDetailCopy(debugDetailExpanded.content, debugDetailExpanded.field)}
+                className="flex items-center gap-2 px-3 py-1.5 rounded bg-slate-700 light:bg-slate-200 text-slate-300 light:text-slate-700 hover:bg-slate-600 light:hover:bg-slate-300 transition-colors text-sm"
+              >
+                {debugDetailCopied === debugDetailExpanded.field ? (
+                  <>
+                    <Check className="w-4 h-4 text-emerald-400" />
+                    <span>已复制</span>
+                  </>
+                ) : (
+                  <>
+                    <Copy className="w-4 h-4" />
+                    <span>复制</span>
+                  </>
+                )}
+              </button>
+            </div>
+            <div className="p-4 bg-slate-800/50 light:bg-slate-100 border border-slate-700 light:border-slate-200 rounded-lg max-h-[60vh] overflow-y-auto">
+              {debugDetailExpanded.content ? (
+                <MarkdownRenderer content={debugDetailExpanded.content} />
+              ) : (
+                <span className="text-sm text-slate-500 light:text-slate-400">(空)</span>
+              )}
+            </div>
+          </div>
+        )}
+      </Modal>
+
+      {/* Attachment Preview Modal */}
+      <AttachmentModal
+        attachment={previewAttachment}
+        isOpen={!!previewAttachment}
+        onClose={() => setPreviewAttachment(null)}
+      />
     </div>
   );
 }

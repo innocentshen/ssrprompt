@@ -1,4 +1,4 @@
-import { Clock, CheckCircle2, XCircle, Loader2, Play, ChevronRight, Zap, Square } from 'lucide-react';
+import { Clock, CheckCircle2, XCircle, Loader2, Play, ChevronRight, Zap, Square, Trash2 } from 'lucide-react';
 import { Badge, Button } from '../ui';
 import type { EvaluationRun, EvaluationStatus } from '../../types';
 
@@ -7,6 +7,7 @@ interface RunHistoryProps {
   selectedRunId: string | null;
   onSelectRun: (run: EvaluationRun) => void;
   onStopRun?: (runId: string) => void;
+  onDeleteRun?: (runId: string) => void;
 }
 
 const statusConfig: Record<EvaluationStatus, { label: string; variant: 'info' | 'warning' | 'success' | 'error'; icon: React.ReactNode }> = {
@@ -27,7 +28,7 @@ function formatDuration(startedAt: string, completedAt: string | null): string {
   return `${Math.floor(durationMs / 60000)}m ${Math.floor((durationMs % 60000) / 1000)}s`;
 }
 
-export function RunHistory({ runs, selectedRunId, onSelectRun, onStopRun }: RunHistoryProps) {
+export function RunHistory({ runs, selectedRunId, onSelectRun, onStopRun, onDeleteRun }: RunHistoryProps) {
   if (runs.length === 0) {
     return (
       <div className="text-center py-12 text-slate-500 light:text-slate-600 border border-dashed border-slate-700 light:border-slate-300 rounded-lg">
@@ -100,6 +101,18 @@ export function RunHistory({ runs, selectedRunId, onSelectRun, onStopRun }: RunH
                       </p>
                       <p className="text-xs text-slate-500 light:text-slate-600">通过率</p>
                     </div>
+                  )}
+                  {onDeleteRun && run.status !== 'running' && (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onDeleteRun(run.id);
+                      }}
+                      className="p-1.5 text-slate-500 hover:text-red-400 transition-colors rounded hover:bg-slate-700/50 light:hover:bg-slate-100"
+                      title="删除此记录"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
                   )}
                   <ChevronRight className={`w-5 h-5 transition-colors ${
                     isSelected ? 'text-cyan-400 light:text-cyan-600' : 'text-slate-600 light:text-slate-400'

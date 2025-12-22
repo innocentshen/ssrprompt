@@ -52,6 +52,8 @@ export function EvaluationPage() {
   const [newEvalPrompt, setNewEvalPrompt] = useState('');
   const [newEvalModel, setNewEvalModel] = useState('');
   const [newEvalJudgeModel, setNewEvalJudgeModel] = useState('');
+  const [listLoading, setListLoading] = useState(true);
+  const [detailsLoading, setDetailsLoading] = useState(false);
 
   const [activeTab, setActiveTab] = useState<TabType>('testcases');
   const [testCases, setTestCases] = useState<TestCase[]>([]);
@@ -69,46 +71,51 @@ export function EvaluationPage() {
   }, []);
 
   const loadEvaluationDetails = useCallback(async (evaluationId: string) => {
-    const db = getDatabase();
-    const [testCasesRes, criteriaRes, runsRes] = await Promise.all([
-      db
-        .from('test_cases')
-        .select('*')
-        .eq('evaluation_id', evaluationId)
-        .order('order_index'),
-      db
-        .from('evaluation_criteria')
-        .select('*')
-        .eq('evaluation_id', evaluationId)
-        .order('created_at'),
-      db
-        .from('evaluation_runs')
-        .select('*')
-        .eq('evaluation_id', evaluationId)
-        .order('created_at', { ascending: false }),
-    ]);
-
-    if (testCasesRes.data) setTestCases(testCasesRes.data);
-    if (criteriaRes.data) setCriteria(criteriaRes.data);
-    if (runsRes.data) {
-      setRuns(runsRes.data);
-      const latestCompletedRun = runsRes.data.find(r => r.status === 'completed');
-      if (latestCompletedRun) {
-        setSelectedRun(latestCompletedRun);
-        const resultsRes = await db
-          .from('test_case_results')
+    setDetailsLoading(true);
+    try {
+      const db = getDatabase();
+      const [testCasesRes, criteriaRes, runsRes] = await Promise.all([
+        db
+          .from('test_cases')
           .select('*')
-          .eq('run_id', latestCompletedRun.id)
-          .order('created_at');
-        if (resultsRes.data) setResults(resultsRes.data);
+          .eq('evaluation_id', evaluationId)
+          .order('order_index'),
+        db
+          .from('evaluation_criteria')
+          .select('*')
+          .eq('evaluation_id', evaluationId)
+          .order('created_at'),
+        db
+          .from('evaluation_runs')
+          .select('*')
+          .eq('evaluation_id', evaluationId)
+          .order('created_at', { ascending: false }),
+      ]);
+
+      if (testCasesRes.data) setTestCases(testCasesRes.data);
+      if (criteriaRes.data) setCriteria(criteriaRes.data);
+      if (runsRes.data) {
+        setRuns(runsRes.data);
+        const latestCompletedRun = runsRes.data.find(r => r.status === 'completed');
+        if (latestCompletedRun) {
+          setSelectedRun(latestCompletedRun);
+          const resultsRes = await db
+            .from('test_case_results')
+            .select('*')
+            .eq('run_id', latestCompletedRun.id)
+            .order('created_at');
+          if (resultsRes.data) setResults(resultsRes.data);
+        } else {
+          setSelectedRun(null);
+          setResults([]);
+        }
       } else {
+        setRuns([]);
         setSelectedRun(null);
         setResults([]);
       }
-    } else {
-      setRuns([]);
-      setSelectedRun(null);
-      setResults([]);
+    } finally {
+      setDetailsLoading(false);
     }
   }, []);
 
@@ -125,23 +132,28 @@ export function EvaluationPage() {
   }, [selectedEvaluation, loadEvaluationDetails]);
 
   const loadData = async () => {
-    const db = getDatabase();
-    const [evalsRes, promptsRes, modelsRes, providersRes] = await Promise.all([
-      db.from('evaluations').select('*').order('created_at', { ascending: false }),
-      db.from('prompts').select('*'),
-      db.from('models').select('*'),
-      db.from('providers').select('*').eq('enabled', true),
-    ]);
+    setListLoading(true);
+    try {
+      const db = getDatabase();
+      const [evalsRes, promptsRes, modelsRes, providersRes] = await Promise.all([
+        db.from('evaluations').select('*').order('created_at', { ascending: false }),
+        db.from('prompts').select('*'),
+        db.from('models').select('*'),
+        db.from('providers').select('*').eq('enabled', true),
+      ]);
 
-    if (evalsRes.data) {
-      setEvaluations(evalsRes.data);
-      if (evalsRes.data.length > 0 && !selectedEvaluation) {
-        setSelectedEvaluation(evalsRes.data[0]);
+      if (evalsRes.data) {
+        setEvaluations(evalsRes.data);
+        if (evalsRes.data.length > 0 && !selectedEvaluation) {
+          setSelectedEvaluation(evalsRes.data[0]);
+        }
       }
+      if (promptsRes.data) setPrompts(promptsRes.data);
+      if (modelsRes.data) setModels(modelsRes.data);
+      if (providersRes.data) setProviders(providersRes.data);
+    } finally {
+      setListLoading(false);
     }
-    if (promptsRes.data) setPrompts(promptsRes.data);
-    if (modelsRes.data) setModels(modelsRes.data);
-    if (providersRes.data) setProviders(providersRes.data);
   };
 
   const handleCreateEvaluation = async () => {
@@ -647,6 +659,32 @@ export function EvaluationPage() {
     showToast('info', '评测已中止');
   };
 
+  const handleDeleteRun = async (runId: string) => {
+    try {
+      // First delete related test case results
+      await getDatabase().from('test_case_results').delete().eq('run_id', runId);
+
+      // Then delete the run itself
+      const { error } = await getDatabase().from('evaluation_runs').delete().eq('id', runId);
+      if (error) {
+        showToast('error', '删除失败');
+        return;
+      }
+
+      setRuns((prev) => prev.filter((r) => r.id !== runId));
+      setResults((prev) => prev.filter((r) => r.run_id !== runId));
+
+      if (selectedRun?.id === runId) {
+        const remainingRuns = runs.filter((r) => r.id !== runId);
+        setSelectedRun(remainingRuns[0] || null);
+      }
+
+      showToast('success', '执行记录已删除');
+    } catch {
+      showToast('error', '删除执行记录失败');
+    }
+  };
+
   const handleDeleteEvaluation = async () => {
     if (!selectedEvaluation) return;
     try {
@@ -824,6 +862,22 @@ export function EvaluationPage() {
         </div>
 
         <div className="flex-1 overflow-y-auto p-2 space-y-1">
+          {listLoading ? (
+            <div className="space-y-2 p-2">
+              {[1, 2, 3, 4].map((i) => (
+                <div key={i} className="p-3 rounded-lg border border-slate-700 light:border-slate-200 animate-pulse">
+                  <div className="flex items-start gap-3">
+                    <div className="w-5 h-5 bg-slate-700 light:bg-slate-200 rounded mt-0.5" />
+                    <div className="flex-1 space-y-2">
+                      <div className="h-4 w-3/4 bg-slate-700 light:bg-slate-200 rounded" />
+                      <div className="h-5 w-16 bg-slate-700 light:bg-slate-200 rounded" />
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+          <>
           {evaluations.map((evaluation) => {
             const status = statusConfig[evaluation.status];
             return (
@@ -848,10 +902,12 @@ export function EvaluationPage() {
               </button>
             );
           })}
-          {evaluations.length === 0 && (
+          {evaluations.length === 0 && !listLoading && (
             <div className="text-center py-8 text-slate-500 light:text-slate-400 text-sm">
               暂无评测任务
             </div>
+          )}
+          </>
           )}
         </div>
       </div>
@@ -1039,6 +1095,35 @@ export function EvaluationPage() {
 
             {/* Content - scrollable */}
             <div className="flex-1 overflow-y-auto p-6 pt-4">
+              {detailsLoading ? (
+                <div className="space-y-6">
+                  {/* Loading indicator at top */}
+                  <div className="flex items-center justify-center gap-2 text-sm text-slate-400 light:text-slate-500 py-2">
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <span>加载评测详情中...</span>
+                  </div>
+                  {/* Skeleton loading */}
+                  <div className="animate-pulse space-y-6">
+                    <div className="flex items-center gap-4">
+                      <div className="h-4 w-32 bg-slate-700 light:bg-slate-200 rounded" />
+                      <div className="h-4 w-20 bg-slate-700 light:bg-slate-200 rounded" />
+                    </div>
+                    {[1, 2, 3].map((i) => (
+                      <div key={i} className="p-4 border border-slate-700 light:border-slate-200 rounded-lg space-y-3">
+                        <div className="flex items-center gap-3">
+                          <div className="h-6 w-6 bg-slate-700 light:bg-slate-200 rounded-full" />
+                          <div className="h-4 w-40 bg-slate-700 light:bg-slate-200 rounded" />
+                        </div>
+                        <div className="h-20 bg-slate-700/50 light:bg-slate-100 rounded" />
+                        <div className="flex gap-2">
+                          <div className="h-3 w-16 bg-slate-700 light:bg-slate-200 rounded" />
+                          <div className="h-3 w-24 bg-slate-700 light:bg-slate-200 rounded" />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : (
               <div>
                 {activeTab === 'testcases' && (
                   <TestCaseList
@@ -1065,6 +1150,7 @@ export function EvaluationPage() {
                     selectedRunId={selectedRun?.id || null}
                     onSelectRun={handleSelectRun}
                     onStopRun={handleStopRun}
+                    onDeleteRun={handleDeleteRun}
                   />
                 )}
 
@@ -1107,6 +1193,7 @@ export function EvaluationPage() {
                   )
                 )}
               </div>
+              )}
             </div>
           </>
         ) : (

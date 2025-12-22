@@ -13,8 +13,11 @@ import {
   Search,
   Trash2,
   History,
+  Copy,
+  Check,
+  Maximize2,
 } from 'lucide-react';
-import { Button, Badge, Select, Modal, Input, useToast } from '../components/ui';
+import { Button, Badge, Select, Modal, Input, useToast, MarkdownRenderer } from '../components/ui';
 import { getDatabase } from '../lib/database';
 import type { Trace, Prompt, Model } from '../types';
 
@@ -39,6 +42,9 @@ export function TracesPage() {
   const [loading, setLoading] = useState(true);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [copiedField, setCopiedField] = useState<'input' | 'output' | null>(null);
+  const [expandedField, setExpandedField] = useState<'input' | 'output' | null>(null);
+  const [expandedContent, setExpandedContent] = useState('');
 
   useEffect(() => {
     loadData();
@@ -87,8 +93,41 @@ export function TracesPage() {
     setDeleting(false);
   };
 
+  const handleDeleteSingleTrace = async (traceId: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    try {
+      const { error } = await getDatabase().from('traces').delete().eq('id', traceId);
+      if (error) {
+        showToast('error', '删除失败');
+        return;
+      }
+      setTraces((prev) => prev.filter((t) => t.id !== traceId));
+      if (selectedTrace?.id === traceId) {
+        setSelectedTrace(null);
+      }
+      showToast('success', '记录已删除');
+    } catch {
+      showToast('error', '删除失败');
+    }
+  };
+
   const getPromptName = (id: string | null) => prompts.find((p) => p.id === id)?.name || '未关联';
   const getModelName = (id: string | null) => models.find((m) => m.id === id)?.name || '-';
+
+  const handleCopy = async (text: string, field: 'input' | 'output') => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedField(field);
+      setTimeout(() => setCopiedField(null), 2000);
+    } catch {
+      showToast('error', '复制失败');
+    }
+  };
+
+  const handleExpand = (content: string, field: 'input' | 'output') => {
+    setExpandedContent(content);
+    setExpandedField(field);
+  };
 
   // Group traces by prompt and calculate stats
   const promptStatsList = useMemo(() => {
@@ -378,7 +417,16 @@ export function TracesPage() {
                       {trace.latency_ms}ms
                     </td>
                     <td className="px-6 py-4">
-                      <ChevronRight className="w-4 h-4 text-slate-600 light:text-slate-400" />
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={(e) => handleDeleteSingleTrace(trace.id, e)}
+                          className="p-1 text-slate-500 hover:text-red-400 transition-colors"
+                          title="删除此记录"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                        <ChevronRight className="w-4 h-4 text-slate-600 light:text-slate-400" />
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -434,20 +482,64 @@ export function TracesPage() {
             </div>
 
             <div>
-              <h4 className="text-sm font-medium text-slate-300 light:text-slate-700 mb-2">输入</h4>
+              <div className="flex items-center justify-between mb-2">
+                <h4 className="text-sm font-medium text-slate-300 light:text-slate-700">输入</h4>
+                <div className="flex items-center gap-1">
+                  <button
+                    onClick={() => handleExpand(selectedTrace.input, 'input')}
+                    className="p-1.5 rounded hover:bg-slate-700 light:hover:bg-slate-200 text-slate-400 light:text-slate-500 hover:text-slate-200 light:hover:text-slate-700 transition-colors"
+                    title="放大查看"
+                  >
+                    <Maximize2 className="w-4 h-4" />
+                  </button>
+                  <button
+                    onClick={() => handleCopy(selectedTrace.input, 'input')}
+                    className="p-1.5 rounded hover:bg-slate-700 light:hover:bg-slate-200 text-slate-400 light:text-slate-500 hover:text-slate-200 light:hover:text-slate-700 transition-colors"
+                    title="复制"
+                  >
+                    {copiedField === 'input' ? (
+                      <Check className="w-4 h-4 text-emerald-400" />
+                    ) : (
+                      <Copy className="w-4 h-4" />
+                    )}
+                  </button>
+                </div>
+              </div>
               <div className="p-4 bg-slate-800/50 light:bg-slate-100 border border-slate-700 light:border-slate-200 rounded-lg max-h-40 overflow-y-auto">
-                <pre className="text-sm text-slate-300 light:text-slate-700 whitespace-pre-wrap font-mono">
-                  {selectedTrace.input}
-                </pre>
+                <MarkdownRenderer content={selectedTrace.input} />
               </div>
             </div>
 
             <div>
-              <h4 className="text-sm font-medium text-slate-300 light:text-slate-700 mb-2">输出</h4>
+              <div className="flex items-center justify-between mb-2">
+                <h4 className="text-sm font-medium text-slate-300 light:text-slate-700">输出</h4>
+                <div className="flex items-center gap-1">
+                  <button
+                    onClick={() => handleExpand(selectedTrace.output || '', 'output')}
+                    className="p-1.5 rounded hover:bg-slate-700 light:hover:bg-slate-200 text-slate-400 light:text-slate-500 hover:text-slate-200 light:hover:text-slate-700 transition-colors"
+                    title="放大查看"
+                  >
+                    <Maximize2 className="w-4 h-4" />
+                  </button>
+                  <button
+                    onClick={() => handleCopy(selectedTrace.output || '', 'output')}
+                    className="p-1.5 rounded hover:bg-slate-700 light:hover:bg-slate-200 text-slate-400 light:text-slate-500 hover:text-slate-200 light:hover:text-slate-700 transition-colors"
+                    title="复制"
+                  >
+                    {copiedField === 'output' ? (
+                      <Check className="w-4 h-4 text-emerald-400" />
+                    ) : (
+                      <Copy className="w-4 h-4" />
+                    )}
+                  </button>
+                </div>
+              </div>
               <div className="p-4 bg-slate-800/50 light:bg-slate-100 border border-slate-700 light:border-slate-200 rounded-lg max-h-40 overflow-y-auto">
-                <pre className="text-sm text-slate-300 light:text-slate-700 whitespace-pre-wrap font-mono">
-                  {selectedTrace.output || '(空)'}
-                </pre>
+                {selectedTrace.output ? (
+                  <MarkdownRenderer content={selectedTrace.output} />
+                ) : (
+                  <span className="text-sm text-slate-500 light:text-slate-400">(空)</span>
+                )}
               </div>
             </div>
 
@@ -493,6 +585,45 @@ export function TracesPage() {
               <Trash2 className="w-4 h-4" />
               确认删除
             </Button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Expanded content modal */}
+      <Modal
+        isOpen={!!expandedField}
+        onClose={() => {
+          setExpandedField(null);
+          setExpandedContent('');
+        }}
+        title={expandedField === 'input' ? '输入内容' : '输出内容'}
+        size="xl"
+      >
+        <div className="space-y-4">
+          <div className="flex items-center justify-end">
+            <button
+              onClick={() => handleCopy(expandedContent, expandedField!)}
+              className="flex items-center gap-2 px-3 py-1.5 rounded bg-slate-700 light:bg-slate-200 text-slate-300 light:text-slate-700 hover:bg-slate-600 light:hover:bg-slate-300 transition-colors text-sm"
+            >
+              {copiedField === expandedField ? (
+                <>
+                  <Check className="w-4 h-4 text-emerald-400" />
+                  <span>已复制</span>
+                </>
+              ) : (
+                <>
+                  <Copy className="w-4 h-4" />
+                  <span>复制</span>
+                </>
+              )}
+            </button>
+          </div>
+          <div className="p-4 bg-slate-800/50 light:bg-slate-100 border border-slate-700 light:border-slate-200 rounded-lg max-h-[60vh] overflow-y-auto">
+            {expandedContent ? (
+              <MarkdownRenderer content={expandedContent} />
+            ) : (
+              <span className="text-sm text-slate-500 light:text-slate-400">(空)</span>
+            )}
           </div>
         </div>
       </Modal>

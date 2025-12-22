@@ -7,6 +7,7 @@ import {
   Settings,
   ChevronLeft,
   ChevronRight,
+  Home,
 } from 'lucide-react';
 
 interface SidebarProps {
@@ -15,6 +16,7 @@ interface SidebarProps {
 }
 
 const navItems = [
+  { id: 'home', name: '首页', icon: Home },
   { id: 'prompts', name: 'Prompt 开发', icon: FileText },
   { id: 'evaluation', name: '评测中心', icon: BarChart3 },
   { id: 'traces', name: '历史记录', icon: Eye },
@@ -30,7 +32,7 @@ export function Sidebar({ currentPage, onNavigate }: SidebarProps) {
         collapsed ? 'w-16' : 'w-60'
       } bg-slate-900 light:bg-white border-r border-slate-700 light:border-slate-200 flex flex-col transition-all duration-300`}
     >
-      <div className="h-14 flex items-center justify-between px-4 border-b border-slate-700 light:border-slate-200">
+      <div className="h-14 flex items-center justify-between px-4 border-b border-slate-700 light:border-slate-200 relative">
         {!collapsed && (
           <div className="flex items-center gap-2">
             <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-cyan-500 to-teal-500 flex items-center justify-center">
@@ -47,10 +49,14 @@ export function Sidebar({ currentPage, onNavigate }: SidebarProps) {
         <button
           onClick={() => setCollapsed(!collapsed)}
           className={`p-1 rounded hover:bg-slate-800 light:hover:bg-slate-100 text-slate-400 light:text-slate-500 hover:text-white light:hover:text-slate-900 transition-colors ${
-            collapsed ? 'hidden' : ''
+            collapsed ? 'absolute right-2 top-4' : ''
           }`}
         >
-          <ChevronLeft className="w-4 h-4" />
+          {collapsed ? (
+            <ChevronRight className="w-4 h-4" />
+          ) : (
+            <ChevronLeft className="w-4 h-4" />
+          )}
         </button>
       </div>
 
@@ -74,15 +80,6 @@ export function Sidebar({ currentPage, onNavigate }: SidebarProps) {
           );
         })}
       </nav>
-
-      {collapsed && (
-        <button
-          onClick={() => setCollapsed(false)}
-          className="p-3 border-t border-slate-700 light:border-slate-200 text-slate-400 light:text-slate-500 hover:text-white light:hover:text-slate-900 hover:bg-slate-800 light:hover:bg-slate-100 transition-colors"
-        >
-          <ChevronRight className="w-4 h-4 mx-auto" />
-        </button>
-      )}
     </aside>
   );
 }

@@ -65,7 +65,7 @@ export function SettingsPage() {
           name,
           type,
           api_key: '',
-          enabled: false,
+          enabled: true,
         })
         .select()
         .single();
