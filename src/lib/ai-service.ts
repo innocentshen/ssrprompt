@@ -457,6 +457,7 @@ export async function streamAIModelWithMessages(
         };
 
         if (params.top_p !== undefined) requestBody.top_p = params.top_p;
+        if (options?.responseFormat) requestBody.response_format = options.responseFormat;
 
         const response = await fetch(`${baseUrl}/v1/chat/completions`, {
           method: 'POST',
@@ -664,6 +665,15 @@ export async function streamAIModelWithMessages(
           maxOutputTokens: params.max_tokens ?? 8192,
         };
 
+        // Add structured output support for Gemini
+        if (options?.responseFormat) {
+          generationConfig.responseMimeType = 'application/json';
+          const responseSchema = (options.responseFormat as { json_schema?: { schema?: object } })?.json_schema?.schema;
+          if (responseSchema) {
+            generationConfig.responseSchema = responseSchema;
+          }
+        }
+
         const requestBody: Record<string, unknown> = { contents, generationConfig };
         if (systemMessage) {
           requestBody.systemInstruction = { parts: [{ text: systemMessage.content }] };
@@ -742,6 +752,8 @@ export async function streamAIModelWithMessages(
           stream: true,
           stream_options: { include_usage: true },
         };
+
+        if (options?.responseFormat) requestBody.response_format = options.responseFormat;
 
         const response = await fetch(
           `${provider.base_url}/openai/deployments/${modelName}/chat/completions?api-version=2024-02-15-preview`,

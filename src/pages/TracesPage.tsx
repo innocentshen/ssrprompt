@@ -73,10 +73,15 @@ export function TracesPage() {
         getDatabase().from('models').select('*'),
       ]);
 
+      if (tracesRes.error) {
+        console.error('Failed to load traces:', tracesRes.error);
+        showToast('error', '加载历史记录失败: ' + tracesRes.error.message);
+      }
       if (tracesRes.data) setTraces(tracesRes.data);
       if (promptsRes.data) setPrompts(promptsRes.data);
       if (modelsRes.data) setModels(modelsRes.data);
-    } catch {
+    } catch (e) {
+      console.error('Failed to load data:', e);
       showToast('error', '请先在设置中配置数据库连接');
     }
     setLoading(false);

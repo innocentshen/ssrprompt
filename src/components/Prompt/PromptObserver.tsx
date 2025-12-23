@@ -10,10 +10,14 @@ import {
   Activity,
   Coins,
   TrendingUp,
+  Paperclip,
+  Loader2,
 } from 'lucide-react';
 import { Button, Badge, Select, Modal } from '../ui';
 import { getDatabase } from '../../lib/database';
-import type { Trace, Model } from '../../types';
+import { AttachmentList } from './AttachmentPreview';
+import { AttachmentModal } from './AttachmentModal';
+import type { Trace, Model, FileAttachment } from '../../types';
 
 interface TraceStats {
   totalCalls: number;
@@ -58,6 +62,45 @@ export function PromptObserver({ promptId, models }: PromptObserverProps) {
   const [loading, setLoading] = useState(true);
   const [selectedTrace, setSelectedTrace] = useState<Trace | null>(null);
   const [stats, setStats] = useState<TraceStats | null>(null);
+  const [previewAttachment, setPreviewAttachment] = useState<FileAttachment | null>(null);
+  const [attachmentsLoading, setAttachmentsLoading] = useState(false);
+
+  // Check if trace has attachments (via metadata.files)
+  const hasAttachments = (trace: Trace): boolean => {
+    const metadata = trace.metadata as { files?: { name: string; type: string }[] } | null;
+    return !!(metadata?.files && metadata.files.length > 0);
+  };
+
+  // Get attachment count from metadata
+  const getAttachmentCount = (trace: Trace): number => {
+    const metadata = trace.metadata as { files?: { name: string; type: string }[] } | null;
+    return metadata?.files?.length || 0;
+  };
+
+  // Handle trace selection with async attachment loading
+  const handleSelectTrace = async (trace: Trace) => {
+    setSelectedTrace(trace);
+    setAttachmentsLoading(false);
+
+    if (hasAttachments(trace)) {
+      setAttachmentsLoading(true);
+      try {
+        const { data } = await getDatabase()
+          .from('traces')
+          .select('attachments')
+          .eq('id', trace.id)
+          .single();
+
+        if (data?.attachments) {
+          setSelectedTrace(prev => prev ? { ...prev, attachments: data.attachments } : null);
+        }
+      } catch (e) {
+        console.error('Failed to load attachments:', e);
+      } finally {
+        setAttachmentsLoading(false);
+      }
+    }
+  };
 
   useEffect(() => {
     loadTraces();
@@ -66,19 +109,23 @@ export function PromptObserver({ promptId, models }: PromptObserverProps) {
   const loadTraces = async () => {
     setLoading(true);
     try {
-      const { data } = await getDatabase()
+      // Exclude attachments field from initial query for better performance
+      const { data, error } = await getDatabase()
         .from('traces')
-        .select('*')
+        .select('id,user_id,prompt_id,model_id,input,output,tokens_input,tokens_output,latency_ms,status,error_message,metadata,created_at')
         .eq('prompt_id', promptId)
         .order('created_at', { ascending: false })
         .limit(100);
 
+      if (error) {
+        console.error('Failed to load traces:', error);
+      }
       if (data) {
         setTraces(data);
         setStats(calculateStats(data));
       }
-    } catch {
-      // Silently handle error
+    } catch (e) {
+      console.error('Failed to load traces:', e);
     }
     setLoading(false);
   };
@@ -191,7 +238,7 @@ export function PromptObserver({ promptId, models }: PromptObserverProps) {
               <div
                 key={trace.id}
                 className="px-4 py-3 hover:bg-slate-800/30 light:hover:bg-slate-50 cursor-pointer transition-colors flex items-center gap-4"
-                onClick={() => setSelectedTrace(trace)}
+                onClick={() => handleSelectTrace(trace)}
               >
                 <div className="flex-shrink-0">
                   {trace.status === 'success' ? (
@@ -293,6 +340,37 @@ export function PromptObserver({ promptId, models }: PromptObserverProps) {
               </div>
             )}
 
+            {/* Attachments Section */}
+            {hasAttachments(selectedTrace) && (
+              <div>
+                <div className="flex items-center gap-2 mb-2">
+                  <Paperclip className="w-4 h-4 text-slate-400" />
+                  <h4 className="text-sm font-medium text-slate-300 light:text-slate-700">
+                    附件 ({getAttachmentCount(selectedTrace)})
+                  </h4>
+                </div>
+                <div className="p-4 bg-slate-800/50 light:bg-slate-100 border border-slate-700 light:border-slate-200 rounded-lg min-h-[60px]">
+                  {attachmentsLoading ? (
+                    <div className="flex items-center gap-2 text-slate-400 light:text-slate-500">
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      <span className="text-sm">正在加载附件...</span>
+                    </div>
+                  ) : selectedTrace.attachments && selectedTrace.attachments.length > 0 ? (
+                    <AttachmentList
+                      attachments={selectedTrace.attachments as FileAttachment[]}
+                      size="md"
+                      maxVisible={10}
+                      onPreview={setPreviewAttachment}
+                    />
+                  ) : (
+                    <div className="flex items-center gap-2 text-slate-500 light:text-slate-400">
+                      <span className="text-sm">附件加载失败</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
             <div className="pt-4 border-t border-slate-700 light:border-slate-200">
               <p className="text-xs text-slate-500 light:text-slate-600">
                 创建时间: {new Date(selectedTrace.created_at).toLocaleString('zh-CN')}
@@ -301,6 +379,13 @@ export function PromptObserver({ promptId, models }: PromptObserverProps) {
           </div>
         )}
       </Modal>
+
+      {/* Attachment Preview Modal */}
+      <AttachmentModal
+        attachment={previewAttachment}
+        isOpen={!!previewAttachment}
+        onClose={() => setPreviewAttachment(null)}
+      />
     </div>
   );
 }
