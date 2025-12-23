@@ -14,7 +14,7 @@ export interface FilterCondition {
 
 export interface QueryRequest {
   config: MySQLConfig;
-  operation: 'select' | 'insert' | 'update' | 'delete' | 'test' | 'initialize';
+  operation: 'select' | 'insert' | 'update' | 'delete' | 'test' | 'initialize' | 'get_schema_version' | 'execute_sql';
   table?: string;
   columns?: string;
   data?: Record<string, unknown> | Record<string, unknown>[];
@@ -22,4 +22,5 @@ export interface QueryRequest {
   orderBy?: { column: string; ascending: boolean }[];
   limit?: number | null;
   singleRow?: boolean;
+  sql?: string; // 用于 execute_sql 操作
 }

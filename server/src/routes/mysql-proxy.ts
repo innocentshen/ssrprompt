@@ -45,7 +45,7 @@ router.post('/mysql-proxy', async (req: Request, res: Response) => {
 
     // Execute raw SQL (for migrations)
     if (operation === 'execute_sql') {
-      const { sql } = body as QueryRequest & { sql: string };
+      const { sql } = body;
       if (!sql) {
         return res.status(400).json({ error: 'SQL is required for execute_sql operation' });
       }

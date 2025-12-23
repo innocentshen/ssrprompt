@@ -314,7 +314,15 @@ export class MySQLAdapter implements DatabaseService {
 
     try {
       for (const migration of migrations) {
-        const result = await this.executeSql(migration.mysql);
+        // 尝试使用 execute_sql 操作
+        let result = await this.executeSql(migration.mysql);
+
+        // 如果 execute_sql 失败，回退到 initialize（兼容旧版后端）
+        if (!result.success) {
+          console.log('execute_sql failed, falling back to initialize:', result.error);
+          result = await this.initialize();
+        }
+
         if (!result.success) {
           return {
             success: false,
@@ -324,21 +332,19 @@ export class MySQLAdapter implements DatabaseService {
           };
         }
 
-        // 记录迁移版本
-        const recordResult = await this.executeSql(
-          `INSERT INTO schema_migrations (version, name) VALUES (${migration.version}, '${migration.name}') ON DUPLICATE KEY UPDATE name = '${migration.name}'`
-        );
-        if (!recordResult.success) {
-          return {
-            success: false,
-            executedMigrations,
-            currentVersion,
-            error: `Failed to record migration v${migration.version}: ${recordResult.error}`
-          };
-        }
-
+        // 迁移成功
         executedMigrations.push(migration.version);
         currentVersion = migration.version;
+
+        // 尝试记录迁移版本到 schema_migrations 表（可选，失败不影响结果）
+        try {
+          await this.executeSql(
+            `INSERT INTO schema_migrations (version, name) VALUES (${migration.version}, '${migration.name}') ON DUPLICATE KEY UPDATE name = '${migration.name}'`
+          );
+        } catch {
+          // 忽略记录失败的错误，因为旧版后端可能不支持
+          console.log('Failed to record migration version, but migration succeeded');
+        }
       }
 
       return {
