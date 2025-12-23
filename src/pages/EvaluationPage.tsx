@@ -14,7 +14,7 @@ import {
   Check,
   X,
 } from 'lucide-react';
-import { Button, Input, Modal, Badge, Select, useToast } from '../components/ui';
+import { Button, Input, Modal, Badge, Select, useToast, ModelSelector } from '../components/ui';
 import { TestCaseList, CriteriaEditor, EvaluationResultsView, RunHistory } from '../components/Evaluation';
 import { getDatabase, isDatabaseConfigured } from '../lib/database';
 import { callAIModel, type FileAttachment } from '../lib/ai-service';
@@ -1003,24 +1003,22 @@ export function EvaluationPage() {
                 </div>
                 <div className="p-4 bg-slate-800/50 light:bg-white border border-slate-700 light:border-slate-200 rounded-lg light:shadow-sm">
                   <p className="text-xs text-slate-500 light:text-slate-600 mb-2">被测模型</p>
-                  <Select
-                    value={selectedEvaluation.model_id || ''}
-                    onChange={(e) => handleUpdateEvaluation('model_id', e.target.value || null)}
-                    options={[
-                      { value: '', label: '选择模型' },
-                      ...enabledModels.map((m) => ({ value: m.id, label: m.name })),
-                    ]}
+                  <ModelSelector
+                    models={models}
+                    providers={providers}
+                    selectedModelId={selectedEvaluation.model_id || ''}
+                    onSelect={(modelId) => handleUpdateEvaluation('model_id', modelId || null)}
+                    placeholder="选择模型"
                   />
                 </div>
                 <div className="p-4 bg-slate-800/50 light:bg-white border border-slate-700 light:border-slate-200 rounded-lg light:shadow-sm">
                   <p className="text-xs text-slate-500 light:text-slate-600 mb-2">评价模型 (Judge)</p>
-                  <Select
-                    value={selectedEvaluation.judge_model_id || ''}
-                    onChange={(e) => handleUpdateEvaluation('judge_model_id', e.target.value || null)}
-                    options={[
-                      { value: '', label: '不使用AI评价' },
-                      ...enabledModels.map((m) => ({ value: m.id, label: m.name })),
-                    ]}
+                  <ModelSelector
+                    models={models}
+                    providers={providers}
+                    selectedModelId={selectedEvaluation.judge_model_id || ''}
+                    onSelect={(modelId) => handleUpdateEvaluation('judge_model_id', modelId || null)}
+                    placeholder="不使用AI评价"
                   />
                 </div>
                 <div className="p-4 bg-slate-800/50 light:bg-white border border-slate-700 light:border-slate-200 rounded-lg light:shadow-sm">
@@ -1230,24 +1228,30 @@ export function EvaluationPage() {
               ...prompts.map((p) => ({ value: p.id, label: p.name })),
             ]}
           />
-          <Select
-            label="被测模型"
-            value={newEvalModel}
-            onChange={(e) => setNewEvalModel(e.target.value)}
-            options={[
-              { value: '', label: '选择模型' },
-              ...enabledModels.map((m) => ({ value: m.id, label: m.name })),
-            ]}
-          />
-          <Select
-            label="评价模型 (Judge)"
-            value={newEvalJudgeModel}
-            onChange={(e) => setNewEvalJudgeModel(e.target.value)}
-            options={[
-              { value: '', label: '不使用AI评价' },
-              ...enabledModels.map((m) => ({ value: m.id, label: m.name })),
-            ]}
-          />
+          <div>
+            <label className="block text-sm font-medium text-slate-300 light:text-slate-700 mb-1.5">
+              被测模型
+            </label>
+            <ModelSelector
+              models={models}
+              providers={providers}
+              selectedModelId={newEvalModel}
+              onSelect={setNewEvalModel}
+              placeholder="选择模型"
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-slate-300 light:text-slate-700 mb-1.5">
+              评价模型 (Judge)
+            </label>
+            <ModelSelector
+              models={models}
+              providers={providers}
+              selectedModelId={newEvalJudgeModel}
+              onSelect={setNewEvalJudgeModel}
+              placeholder="不使用AI评价"
+            />
+          </div>
           <p className="text-xs text-slate-500 light:text-slate-600">
             评价模型用于对被测模型的输出进行AI打分和评价
           </p>

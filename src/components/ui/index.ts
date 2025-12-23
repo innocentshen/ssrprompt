@@ -9,3 +9,4 @@ export { MarkdownRenderer } from './MarkdownRenderer';
 export { Slider } from './Slider';
 export { Tabs } from './Tabs';
 export { Collapsible } from './Collapsible';
+export { ModelSelector } from './ModelSelector';

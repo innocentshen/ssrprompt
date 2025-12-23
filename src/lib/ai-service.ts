@@ -461,6 +461,8 @@ export async function streamAIModelWithMessages(
           max_tokens: params.max_tokens ?? 4096,
           stream: true,
           stream_options: { include_usage: true },
+          // OpenRouter: 启用思考功能 (对于支持的模型如 Gemini Flash Thinking)
+          reasoning: { enabled: true },
         };
 
         if (params.top_p !== undefined) requestBody.top_p = params.top_p;
@@ -489,7 +491,9 @@ export async function streamAIModelWithMessages(
 
         const decoder = new TextDecoder();
         let fullContent = '';
+        let fullThinking = '';
         let usage: StreamUsage = { tokensInput: 0, tokensOutput: 0 };
+        let reasoningDetails: Array<{ type: string; text?: string }> = [];
 
         while (true) {
           const { done, value } = await reader.read();
@@ -504,11 +508,38 @@ export async function streamAIModelWithMessages(
               if (data === '[DONE]') continue;
               try {
                 const parsed = JSON.parse(data);
-                const content = parsed.choices?.[0]?.delta?.content;
-                if (content) {
-                  fullContent += content;
-                  callbacks.onToken(content);
+                const choice = parsed.choices?.[0];
+                const delta = choice?.delta;
+
+                // 处理标准 content
+                if (delta?.content) {
+                  fullContent += delta.content;
+                  callbacks.onToken(delta.content);
+                  // 让出主线程，给浏览器一帧的时间渲染
+                  await new Promise(resolve => requestAnimationFrame(() => resolve(undefined)));
                 }
+
+                // 处理 OpenRouter 的流式 reasoning 字段
+                if (delta?.reasoning) {
+                  fullThinking += delta.reasoning;
+                  callbacks.onThinkingToken?.(delta.reasoning);
+                  // 让出主线程，给浏览器一帧的时间渲染
+                  await new Promise(resolve => requestAnimationFrame(() => resolve(undefined)));
+                }
+
+                // 处理 OpenRouter 的 reasoning_content 字段 (某些模型使用)
+                if (delta?.reasoning_content) {
+                  fullThinking += delta.reasoning_content;
+                  callbacks.onThinkingToken?.(delta.reasoning_content);
+                  await new Promise(resolve => requestAnimationFrame(() => resolve(undefined)));
+                }
+
+                // 处理最终消息中的 reasoning_details (非流式部分)
+                const message = choice?.message;
+                if (message?.reasoning_details) {
+                  reasoningDetails = message.reasoning_details;
+                }
+
                 // Extract usage from the final chunk
                 if (parsed.usage) {
                   usage = {
@@ -523,6 +554,18 @@ export async function streamAIModelWithMessages(
           }
         }
 
+        // 从 reasoning_details 中提取思考文本 (如果流式没有获取到)
+        if (!fullThinking && reasoningDetails.length > 0) {
+          fullThinking = reasoningDetails
+            .filter((item) => item.type === 'reasoning.text' && item.text)
+            .map((item) => item.text)
+            .join('\n\n');
+        }
+
+        // 如果有思考内容，将其包装成标签格式
+        if (fullThinking) {
+          fullContent = `<think>${fullThinking}</think>${fullContent}`;
+        }
         callbacks.onComplete?.(fullContent, undefined, usage);
         break;
       }

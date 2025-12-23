@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Sparkles, Wand2, Check, X, Loader2, AlertCircle, ArrowRight, Trophy, Star, TrendingUp, Settings } from 'lucide-react';
 import { PromptMessage } from '../../types/database';
-import { Button, Select } from '../ui';
+import { Button, ModelSelector } from '../ui';
 import type { Model, Provider } from '../../types';
 
 export type SuggestionType = 'clarity' | 'structure' | 'specificity' | 'examples' | 'constraints';
@@ -141,12 +141,6 @@ export function PromptOptimizer({
   const hasContent = messages.some((m) => m.content.trim().length > 0) || (content && content.trim().length > 0);
   const displaySuggestions = analysisResult?.suggestions || suggestions;
 
-  // Filter enabled models
-  const enabledModels = models.filter((m) => {
-    const provider = providers.find((p) => p.id === m.provider_id);
-    return provider?.enabled;
-  });
-
   return (
     <div className="h-full flex flex-col">
       {/* Header */}
@@ -191,15 +185,15 @@ export function PromptOptimizer({
 
       {/* Model Selector */}
       <div className="mb-4 p-3 bg-slate-800/50 light:bg-slate-100 rounded-lg border border-slate-700 light:border-slate-200">
-        <Select
-          label="分析模型"
-          value={selectedModelId}
-          onChange={(e) => onModelChange(e.target.value)}
-          options={
-            enabledModels.length > 0
-              ? enabledModels.map((m) => ({ value: m.id, label: m.name }))
-              : [{ value: '', label: '请先配置并启用模型服务商' }]
-          }
+        <label className="block text-xs text-slate-400 light:text-slate-600 mb-2">
+          分析模型
+        </label>
+        <ModelSelector
+          models={models}
+          providers={providers}
+          selectedModelId={selectedModelId}
+          onSelect={onModelChange}
+          placeholder="请先配置并启用模型服务商"
         />
         <p className="text-xs text-slate-500 mt-1.5">
           选择用于分析 Prompt 的 AI 模型

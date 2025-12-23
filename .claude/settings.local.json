@@ -25,7 +25,9 @@
       "Bash(npm run dev:all:*)",
       "Bash(chmod:*)",
       "Bash(grep:*)",
-      "Bash(sort:*)"
+      "Bash(sort:*)",
+      "Bash(npx tsx:*)",
+      "Bash(del \"H:\\\\ssrprompt\\\\test-thinking.ts\")"
     ]
   }
 }

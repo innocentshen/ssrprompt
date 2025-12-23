@@ -17,8 +17,8 @@ import {
   X,
   Image as ImageIcon,
 } from 'lucide-react';
-import { Button, Input, useToast, MarkdownRenderer } from '../components/ui';
-import { ThinkingBlock } from '../components/Prompt';
+import { Button, Input, useToast, MarkdownRenderer, ModelSelector } from '../components/ui';
+import { ThinkingBlock, AttachmentPreview, AttachmentModal } from '../components/Prompt';
 import { getDatabase, isDatabaseConfigured } from '../lib/database';
 import { streamAIModelWithMessages, fileToBase64, extractThinking, type ChatMessage as AIChatMessage, type FileAttachment } from '../lib/ai-service';
 import { getFileInputAccept, isSupportedFileType } from '../lib/file-utils';
@@ -116,6 +116,7 @@ export function PromptWizardPage({ onNavigate }: PromptWizardPageProps) {
   const [attachedFiles, setAttachedFiles] = useState<FileAttachment[]>([]);
   const [streamingThinking, setStreamingThinking] = useState('');
   const [isThinking, setIsThinking] = useState(false);
+  const [previewAttachment, setPreviewAttachment] = useState<FileAttachment | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const chatContainerRef = useRef<HTMLDivElement>(null);
 
@@ -461,17 +462,15 @@ export function PromptWizardPage({ onNavigate }: PromptWizardPageProps) {
                 <label className="block text-sm font-medium text-slate-300 light:text-slate-700 mb-2">
                   对话模型
                 </label>
-                <select
-                  value={selectedModelId}
-                  onChange={(e) => setSelectedModelId(e.target.value)}
-                  className="w-full max-w-xs px-3 py-2 bg-slate-800 light:bg-white border border-slate-600 light:border-slate-300 rounded-lg text-slate-200 light:text-slate-800 text-sm"
-                >
-                  {availableModels.map((model) => (
-                    <option key={model.id} value={model.id}>
-                      {model.name}
-                    </option>
-                  ))}
-                </select>
+                <div className="max-w-xs">
+                  <ModelSelector
+                    models={models}
+                    providers={providers}
+                    selectedModelId={selectedModelId}
+                    onSelect={setSelectedModelId}
+                    placeholder="选择模型"
+                  />
+                </div>
               </div>
             )}
 
@@ -537,14 +536,25 @@ export function PromptWizardPage({ onNavigate }: PromptWizardPageProps) {
                         <div className="p-2 pb-0">
                           <div className="flex flex-wrap gap-2">
                             {msg.attachments.map((file, fileIndex) => (
-                              file.type.startsWith('image/') && (
-                                <img
-                                  key={fileIndex}
-                                  src={`data:${file.type};base64,${file.base64}`}
-                                  alt={file.name}
-                                  className="max-w-[200px] max-h-[150px] rounded-lg object-cover"
-                                />
-                              )
+                              <div
+                                key={fileIndex}
+                                className="cursor-pointer hover:opacity-80 transition-opacity"
+                                onClick={() => setPreviewAttachment(file)}
+                              >
+                                {file.type.startsWith('image/') ? (
+                                  <img
+                                    src={`data:${file.type};base64,${file.base64}`}
+                                    alt={file.name}
+                                    className="max-w-[200px] max-h-[150px] rounded-lg object-cover"
+                                  />
+                                ) : (
+                                  <AttachmentPreview
+                                    attachment={file}
+                                    size="lg"
+                                    showName
+                                  />
+                                )}
+                              </div>
                             ))}
                           </div>
                         </div>
@@ -636,18 +646,16 @@ export function PromptWizardPage({ onNavigate }: PromptWizardPageProps) {
               {/* Model Selector in Chat */}
               <div className="flex items-center gap-2">
                 <span className="text-xs text-slate-500 light:text-slate-600">当前模型:</span>
-                <select
-                  value={selectedModelId}
-                  onChange={(e) => setSelectedModelId(e.target.value)}
-                  disabled={isLoading}
-                  className="flex-1 max-w-xs px-2 py-1 bg-slate-800 light:bg-white border border-slate-600 light:border-slate-300 rounded text-slate-200 light:text-slate-800 text-xs disabled:opacity-50"
-                >
-                  {availableModels.map((model) => (
-                    <option key={model.id} value={model.id}>
-                      {model.name}
-                    </option>
-                  ))}
-                </select>
+                <div className="flex-1 max-w-xs">
+                  <ModelSelector
+                    models={models}
+                    providers={providers}
+                    selectedModelId={selectedModelId}
+                    onSelect={setSelectedModelId}
+                    disabled={isLoading}
+                    placeholder="选择模型"
+                  />
+                </div>
               </div>
 
               {/* Attached Files Preview */}
@@ -656,17 +664,13 @@ export function PromptWizardPage({ onNavigate }: PromptWizardPageProps) {
                   {attachedFiles.map((file, index) => (
                     <div
                       key={index}
-                      className="relative group flex items-center gap-2 px-3 py-1.5 bg-slate-800 light:bg-slate-100 rounded-lg border border-slate-600 light:border-slate-300"
+                      className="relative group flex items-center gap-2 px-2 py-1.5 bg-slate-800 light:bg-slate-100 rounded-lg border border-slate-600 light:border-slate-300"
                     >
-                      {file.type.startsWith('image/') ? (
-                        <img
-                          src={`data:${file.type};base64,${file.base64}`}
-                          alt={file.name}
-                          className="w-8 h-8 object-cover rounded"
-                        />
-                      ) : (
-                        <FileText className="w-4 h-4 text-slate-400" />
-                      )}
+                      <AttachmentPreview
+                        attachment={file}
+                        size="sm"
+                        onClick={() => setPreviewAttachment(file)}
+                      />
                       <span className="text-xs text-slate-400 light:text-slate-600 max-w-[100px] truncate">
                         {file.name}
                       </span>
@@ -681,7 +685,8 @@ export function PromptWizardPage({ onNavigate }: PromptWizardPageProps) {
                 </div>
               )}
 
-              <div className="flex gap-3">
+              {/* Input Area */}
+              <div className="relative">
                 <input
                   ref={fileInputRef}
                   type="file"
@@ -690,33 +695,42 @@ export function PromptWizardPage({ onNavigate }: PromptWizardPageProps) {
                   onChange={handleFileSelect}
                   className="hidden"
                 />
-                <button
-                  onClick={() => fileInputRef.current?.click()}
-                  className="p-3 rounded-xl bg-slate-800 light:bg-slate-100 border border-slate-600 light:border-slate-300 text-slate-400 light:text-slate-500 hover:text-cyan-400 light:hover:text-cyan-600 hover:border-cyan-500 transition-colors"
-                  title="上传图片"
-                >
-                  <Paperclip className="w-5 h-5" />
-                </button>
-                <textarea
-                  value={inputMessage}
-                  onChange={(e) => setInputMessage(e.target.value)}
-                  onKeyDown={handleKeyDown}
-                  onPaste={handlePaste}
-                  placeholder="描述您的需求...（支持粘贴图片）"
-                  rows={2}
-                  className="flex-1 px-4 py-3 bg-slate-800 light:bg-white border border-slate-600 light:border-slate-300 rounded-xl text-slate-200 light:text-slate-800 placeholder-slate-500 light:placeholder-slate-400 resize-none focus:outline-none focus:ring-2 focus:ring-cyan-500/50 focus:border-cyan-500"
-                />
-                <Button
-                  onClick={handleSendMessage}
-                  disabled={(!inputMessage.trim() && attachedFiles.length === 0) || isLoading || !selectedModelId}
-                  className="self-end"
-                >
-                  {isLoading ? (
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                  ) : (
-                    <Send className="w-4 h-4" />
-                  )}
-                </Button>
+                <div className="flex items-end gap-2 p-3 bg-slate-800 light:bg-white border border-slate-600 light:border-slate-300 rounded-xl focus-within:ring-2 focus-within:ring-cyan-500/50 focus-within:border-cyan-500">
+                  <button
+                    onClick={() => fileInputRef.current?.click()}
+                    className="p-2 rounded-lg text-slate-400 light:text-slate-500 hover:text-cyan-400 light:hover:text-cyan-600 hover:bg-slate-700 light:hover:bg-slate-100 transition-colors"
+                    title="上传文件"
+                  >
+                    <Paperclip className="w-5 h-5" />
+                  </button>
+                  <textarea
+                    value={inputMessage}
+                    onChange={(e) => setInputMessage(e.target.value)}
+                    onKeyDown={handleKeyDown}
+                    onPaste={handlePaste}
+                    placeholder="描述您的需求...（支持粘贴图片）"
+                    rows={1}
+                    className="flex-1 bg-transparent text-slate-200 light:text-slate-800 placeholder-slate-500 light:placeholder-slate-400 resize-none focus:outline-none min-h-[24px] max-h-[120px]"
+                    style={{ height: 'auto' }}
+                    onInput={(e) => {
+                      const target = e.target as HTMLTextAreaElement;
+                      target.style.height = 'auto';
+                      target.style.height = Math.min(target.scrollHeight, 120) + 'px';
+                    }}
+                  />
+                  <Button
+                    onClick={handleSendMessage}
+                    disabled={(!inputMessage.trim() && attachedFiles.length === 0) || isLoading || !selectedModelId}
+                    size="sm"
+                    className="rounded-lg"
+                  >
+                    {isLoading ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <Send className="w-4 h-4" />
+                    )}
+                  </Button>
+                </div>
               </div>
             </div>
           </div>
@@ -777,6 +791,13 @@ export function PromptWizardPage({ onNavigate }: PromptWizardPageProps) {
           </div>
         </div>
       )}
+
+      {/* Attachment Preview Modal */}
+      <AttachmentModal
+        attachment={previewAttachment}
+        isOpen={!!previewAttachment}
+        onClose={() => setPreviewAttachment(null)}
+      />
     </div>
   );
 }

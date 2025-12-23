@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useMemo, useCallback, MutableRefObject } from 'react';
+import { flushSync } from 'react-dom';
 import {
   Plus,
   Search,
@@ -25,7 +26,7 @@ import {
   Copy,
   Maximize2,
 } from 'lucide-react';
-import { Button, Input, Modal, Badge, Select, useToast, MarkdownRenderer, Tabs, Collapsible } from '../components/ui';
+import { Button, Input, Modal, Badge, Select, useToast, MarkdownRenderer, Tabs, Collapsible, ModelSelector } from '../components/ui';
 import { MessageList, ParameterPanel, VariableEditor, DebugHistory, PromptOptimizer, PromptObserver, StructuredOutputEditor, ThinkingBlock, AttachmentModal } from '../components/Prompt';
 import type { DebugRun } from '../components/Prompt';
 import { getDatabase, isDatabaseConfigured } from '../lib/database';
@@ -451,6 +452,7 @@ export function PromptsPage() {
 
       let fullContent = '';
       let accumulatedThinking = '';
+      let isCurrentlyThinking = false;  // 局部变量跟踪思考状态，避免闭包问题
 
       await streamAIModel(
         provider,
@@ -460,19 +462,40 @@ export function PromptsPage() {
           onToken: (token) => {
             fullContent += token;
 
-            // 实时检测思考内容
+            // 收到正文内容时，结束思考状态
+            if (isCurrentlyThinking) {
+              isCurrentlyThinking = false;
+              flushSync(() => {
+                setIsThinking(false);
+              });
+            }
+
+            // 实时检测思考内容 (用于文本标签格式如 <think>)
             const { thinking, content } = extractThinking(fullContent);
+
             if (thinking && thinking !== accumulatedThinking) {
-              if (!isThinking) {
-                setIsThinking(true);
-                thinkingStartTime = Date.now();
-              }
               accumulatedThinking = thinking;
               setThinkingContent(thinking);
             }
 
-            // 显示去除思考标签后的内容
-            setTestOutput(content);
+            // 显示去除思考标签后的内容 - 使用 flushSync 强制同步更新实现流式渲染
+            flushSync(() => {
+              setTestOutput(content);
+            });
+          },
+          onThinkingToken: (token) => {
+            // 流式思考内容 (用于 OpenRouter reasoning 字段)
+            if (!isCurrentlyThinking) {
+              isCurrentlyThinking = true;
+              thinkingStartTime = Date.now();
+              flushSync(() => {
+                setIsThinking(true);
+              });
+            }
+            accumulatedThinking += token;
+            flushSync(() => {
+              setThinkingContent(accumulatedThinking);
+            });
           },
           onComplete: async (finalContent, _thinking, usage) => {
             const latencyMs = Date.now() - startTime;
@@ -1132,19 +1155,13 @@ export function PromptsPage() {
                         <label className="block text-xs text-slate-400 light:text-slate-600 mb-2">
                           运行模型
                         </label>
-                        <select
-                          value={selectedModel}
-                          onChange={(e) => setSelectedModel(e.target.value)}
-                          className="w-full px-3 py-2 bg-slate-900 light:bg-slate-50 border border-slate-600 light:border-slate-300 rounded-lg text-sm text-slate-200 light:text-slate-800 focus:outline-none focus:border-cyan-500"
-                        >
-                          {enabledModels.length > 0 ? (
-                            enabledModels.map((m) => (
-                              <option key={m.id} value={m.id}>{m.name}</option>
-                            ))
-                          ) : (
-                            <option value="">请先配置模型</option>
-                          )}
-                        </select>
+                        <ModelSelector
+                          models={models}
+                          providers={providers}
+                          selectedModelId={selectedModel}
+                          onSelect={setSelectedModel}
+                          placeholder="请先配置模型"
+                        />
                       </div>
 
                       {/* Parameter panel */}
@@ -1328,17 +1345,17 @@ export function PromptsPage() {
                           </button>
                         </div>
                         <div className="min-h-[300px] max-h-[500px] p-3 bg-slate-800/50 light:bg-white border border-slate-700 light:border-slate-300 rounded-lg text-sm text-slate-300 light:text-slate-700 overflow-y-auto">
-                          {running ? (
-                            <div className="flex items-center gap-2 text-slate-500 light:text-slate-600">
-                              <Loader2 className="w-4 h-4 animate-spin" />
-                              <span>生成中...</span>
-                            </div>
-                          ) : testOutput ? (
+                          {testOutput ? (
                             renderMarkdown ? (
                               <MarkdownRenderer content={testOutput} />
                             ) : (
                               <pre className="whitespace-pre-wrap font-mono">{testOutput}</pre>
                             )
+                          ) : running ? (
+                            <div className="flex items-center gap-2 text-slate-500 light:text-slate-600">
+                              <Loader2 className="w-4 h-4 animate-spin" />
+                              <span>生成中...</span>
+                            </div>
                           ) : (
                             <span className="text-slate-500 light:text-slate-600">点击运行查看结果</span>
                           )}
