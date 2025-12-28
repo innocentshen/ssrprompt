@@ -3,7 +3,7 @@ CREATE TABLE IF NOT EXISTS providers (
   id VARCHAR(36) PRIMARY KEY DEFAULT (UUID()),
   user_id VARCHAR(36) NOT NULL DEFAULT 'demo',
   name VARCHAR(255) NOT NULL,
-  type ENUM('openai', 'anthropic', 'gemini', 'azure', 'custom') NOT NULL,
+  type ENUM('openai', 'anthropic', 'gemini', 'custom', 'openrouter') NOT NULL,
   api_key TEXT NOT NULL,
   base_url TEXT,
   enabled BOOLEAN DEFAULT FALSE,
@@ -19,6 +19,8 @@ CREATE TABLE IF NOT EXISTS models (
   name VARCHAR(255) NOT NULL,
   capabilities JSON,
   supports_vision BOOLEAN DEFAULT TRUE,
+  supports_reasoning BOOLEAN DEFAULT FALSE,
+  supports_function_calling BOOLEAN DEFAULT FALSE,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   INDEX idx_models_provider_id (provider_id),
   FOREIGN KEY (provider_id) REFERENCES providers(id) ON DELETE CASCADE
@@ -149,6 +151,8 @@ CREATE TABLE IF NOT EXISTS traces (
   error_message TEXT,
   metadata JSON,
   attachments JSON,
+  thinking_content TEXT,
+  thinking_time_ms INT UNSIGNED,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   INDEX idx_traces_user_id (user_id),
   INDEX idx_traces_created_at (created_at DESC)

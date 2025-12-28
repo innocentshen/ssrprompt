@@ -49,6 +49,7 @@
   "configureModelProviderFirst": "設定でモデルプロバイダーを設定して有効にしてください",
   "runComplete": "実行完了",
   "runFailed": "実行に失敗しました",
+  "runStopped": "停止しました",
   "unknownError": "不明なエラー",
   "deleteFailed": "削除に失敗しました",
   "promptDeleted": "プロンプトを削除しました",
@@ -288,5 +289,6 @@
   "wizardTemplateInitialCodeAssistant": "コードの作成と理解を助けるコードアシスタントを作成したいです。",
   "wizardTemplateInitialTranslator": "正確な多言語翻訳ができる翻訳アシスタントを作成したいです。",
   "wizardTemplateInitialDataAnalyzer": "データを分析してインサイトを提供するデータ分析アシスタントを作成したいです。",
-  "wizardTemplateInitialCustomerService": "顧客の質問にフレンドリーに回答できるカスタマーサービスアシスタントを作成したいです。"
+  "wizardTemplateInitialCustomerService": "顧客の質問にフレンドリーに回答できるカスタマーサービスアシスタントを作成したいです。",
+  "reasoningEffort": "推論強度"
 }

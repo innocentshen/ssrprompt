@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Cloud, Bot, Sparkles, Cpu, Server } from 'lucide-react';
+import { Bot, Sparkles, Cpu, Server, Globe } from 'lucide-react';
 import { Modal, Button, Input, Select } from '../ui';
 import type { ProviderType } from '../../types';
 
@@ -21,7 +21,7 @@ export function AddProviderModal({ isOpen, onClose, onAdd }: AddProviderModalPro
     { value: 'openai', label: 'OpenAI', icon: Sparkles, color: 'from-emerald-500 to-green-500' },
     { value: 'anthropic', label: 'Anthropic', icon: Bot, color: 'from-amber-500 to-orange-500' },
     { value: 'gemini', label: 'Google Gemini', icon: Cpu, color: 'from-blue-500 to-cyan-500' },
-    { value: 'azure', label: 'Azure OpenAI', icon: Cloud, color: 'from-sky-500 to-blue-500' },
+    { value: 'openrouter', label: 'OpenRouter', icon: Globe, color: 'from-purple-500 to-pink-500' },
     { value: 'custom', label: t('customOpenAICompatible'), icon: Server, color: 'from-slate-500 to-slate-600' },
   ];
 

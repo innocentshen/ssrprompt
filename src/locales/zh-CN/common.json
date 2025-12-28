@@ -2,6 +2,7 @@
   "loading": "加载中...",
   "save": "保存",
   "cancel": "取消",
+  "stop": "停止",
   "delete": "删除",
   "edit": "编辑",
   "create": "创建",
@@ -64,5 +65,16 @@
   "rotate": "旋转",
   "cannotPreviewFileType": "无法预览此文件类型",
   "clickDownloadToGetFile": "点击下载按钮获取文件",
-  "judgeModelDescription": "评价模型用于对被测模型的输出进行AI打分和评价"
+  "judgeModelDescription": "评价模型用于对被测模型的输出进行AI打分和评价",
+  "reasoningEffort": "推理强度",
+  "reasoningDefault": "默认",
+  "reasoningDefaultDesc": "使用模型默认设置",
+  "reasoningNone": "关闭",
+  "reasoningNoneDesc": "不启用扩展思考",
+  "reasoningLow": "浮想",
+  "reasoningLowDesc": "快速简短的思考",
+  "reasoningMedium": "斟酌",
+  "reasoningMediumDesc": "平衡速度和深度",
+  "reasoningHigh": "沉思",
+  "reasoningHighDesc": "深度推理分析"
 }

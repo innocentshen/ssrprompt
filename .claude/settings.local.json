@@ -48,7 +48,9 @@
       "Bash(del \"H:\\\\ssrprompt\\\\update-setup-wizard.cjs\")",
       "WebFetch(domain:docs.cherry-ai.com)",
       "Bash(node migrate-provider-form.cjs:*)",
-      "Bash(wc:*)"
+      "Bash(wc:*)",
+      "WebFetch(domain:developers.googleblog.com)",
+      "WebFetch(domain:deepmind.google)"
     ]
   }
 }

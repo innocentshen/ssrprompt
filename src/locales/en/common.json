@@ -2,6 +2,7 @@
   "loading": "Loading...",
   "save": "Save",
   "cancel": "Cancel",
+  "stop": "Stop",
   "delete": "Delete",
   "edit": "Edit",
   "create": "Create",
@@ -64,5 +65,16 @@
   "rotate": "Rotate",
   "cannotPreviewFileType": "Cannot preview this file type",
   "clickDownloadToGetFile": "Click download button to get the file",
-  "judgeModelDescription": "Judge model is used to score and evaluate the output of the tested model"
+  "judgeModelDescription": "Judge model is used to score and evaluate the output of the tested model",
+  "reasoningEffort": "Reasoning Effort",
+  "reasoningDefault": "Default",
+  "reasoningDefaultDesc": "Use model default settings",
+  "reasoningNone": "None",
+  "reasoningNoneDesc": "Disable extended thinking",
+  "reasoningLow": "Low",
+  "reasoningLowDesc": "Quick and brief thinking",
+  "reasoningMedium": "Medium",
+  "reasoningMediumDesc": "Balance speed and depth",
+  "reasoningHigh": "High",
+  "reasoningHighDesc": "Deep reasoning analysis"
 }

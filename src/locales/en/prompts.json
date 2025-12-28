@@ -49,6 +49,7 @@
   "configureModelProviderFirst": "Please configure and enable model provider in settings first",
   "runComplete": "Run complete",
   "runFailed": "Run failed",
+  "runStopped": "Run stopped",
   "unknownError": "Unknown error",
   "deleteFailed": "Delete failed",
   "promptDeleted": "Prompt deleted",
@@ -288,5 +289,6 @@
   "wizardTemplateInitialCodeAssistant": "I want to create a code assistant that helps me write and understand code.",
   "wizardTemplateInitialTranslator": "I want to create a translation assistant that can perform accurate multi-language translations.",
   "wizardTemplateInitialDataAnalyzer": "I want to create a data analysis assistant that helps analyze data and provide insights.",
-  "wizardTemplateInitialCustomerService": "I want to create a customer service assistant that can answer customer questions in a friendly manner."
+  "wizardTemplateInitialCustomerService": "I want to create a customer service assistant that can answer customer questions in a friendly manner.",
+  "reasoningEffort": "Reasoning Effort"
 }

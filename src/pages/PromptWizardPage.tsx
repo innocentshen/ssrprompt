@@ -17,14 +17,16 @@ import {
   Paperclip,
   X,
   Image as ImageIcon,
+  Settings2,
 } from 'lucide-react';
 import { Button, Input, useToast, MarkdownRenderer, ModelSelector } from '../components/ui';
-import { ThinkingBlock, AttachmentPreview, AttachmentModal } from '../components/Prompt';
+import { ThinkingBlock, AttachmentPreview, AttachmentModal, ParameterPanel } from '../components/Prompt';
 import { getDatabase, isDatabaseConfigured } from '../lib/database';
 import { streamAIModelWithMessages, fileToBase64, extractThinking, type ChatMessage as AIChatMessage, type FileAttachment } from '../lib/ai-service';
 import { getFileInputAccept, isSupportedFileType } from '../lib/file-utils';
 import { getFileUploadCapabilities, isFileTypeAllowed } from '../lib/model-capabilities';
-import type { Model, Provider } from '../types';
+import type { Model, Provider, PromptConfig } from '../types';
+import { DEFAULT_PROMPT_CONFIG } from '../types/database';
 
 interface PromptWizardPageProps {
   onNavigate: (page: string) => void;
@@ -43,6 +45,7 @@ interface ChatMessage {
   content: string;
   attachments?: FileAttachment[];
   thinking?: string;
+  thinkingDurationMs?: number;
 }
 
 const DEFAULT_TEMPLATES: Template[] = [
@@ -86,6 +89,7 @@ const DEFAULT_TEMPLATES: Template[] = [
 
 export function PromptWizardPage({ onNavigate }: PromptWizardPageProps) {
   const { t } = useTranslation('prompts');
+  const { t: tCommon } = useTranslation('common');
   const { showToast } = useToast();
   const [step, setStep] = useState<'template' | 'chat' | 'result'>('template');
   const [selectedTemplate, setSelectedTemplate] = useState<Template | null>(null);
@@ -97,6 +101,7 @@ export function PromptWizardPage({ onNavigate }: PromptWizardPageProps) {
   const [isLoading, setIsLoading] = useState(false);
   const [streamingContent, setStreamingContent] = useState('');
   const [generatedPrompt, setGeneratedPrompt] = useState('');
+  const [isPromptPreviewOpen, setIsPromptPreviewOpen] = useState(true);
   const [promptName, setPromptName] = useState('');
   const [isSaving, setIsSaving] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -104,12 +109,35 @@ export function PromptWizardPage({ onNavigate }: PromptWizardPageProps) {
   const [streamingThinking, setStreamingThinking] = useState('');
   const [isThinking, setIsThinking] = useState(false);
   const [previewAttachment, setPreviewAttachment] = useState<FileAttachment | null>(null);
+  const [modelConfig, setModelConfig] = useState<PromptConfig>(DEFAULT_PROMPT_CONFIG);
+  const [showParameterPanel, setShowParameterPanel] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const chatContainerRef = useRef<HTMLDivElement>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
+  const parameterPanelRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     loadModels();
   }, []);
+
+  useEffect(() => {
+    return () => {
+      abortControllerRef.current?.abort();
+    };
+  }, []);
+
+  // 点击外部关闭参数面板
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (parameterPanelRef.current && !parameterPanelRef.current.contains(event.target as Node)) {
+        setShowParameterPanel(false);
+      }
+    };
+    if (showParameterPanel) {
+      document.addEventListener('mousedown', handleClickOutside);
+    }
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [showParameterPanel]);
 
   const loadModels = async () => {
     // 检查数据库是否已配置
@@ -177,6 +205,7 @@ export function PromptWizardPage({ onNavigate }: PromptWizardPageProps) {
 
   const sendMessage = async (content: string) => {
     if ((!content.trim() && attachedFiles.length === 0) || !selectedModelId) return;
+    if (isLoading) return;
 
     const currentFiles = [...attachedFiles];
     const userMessage: ChatMessage = {
@@ -194,12 +223,17 @@ export function PromptWizardPage({ onNavigate }: PromptWizardPageProps) {
     setAttachedFiles([]);
 
     try {
+      abortControllerRef.current?.abort();
       const { model, provider } = getModelInfo(selectedModelId);
       if (!model || !provider) {
         showToast('error', t('wizardSelectModel'));
         setIsLoading(false);
+        abortControllerRef.current = null;
         return;
       }
+
+      const abortController = new AbortController();
+      abortControllerRef.current = abortController;
 
       const apiMessages: AIChatMessage[] = [
         { role: 'system', content: t('wizardSystemPrompt') },
@@ -208,6 +242,8 @@ export function PromptWizardPage({ onNavigate }: PromptWizardPageProps) {
 
       let fullContent = '';
       let accumulatedThinking = '';
+      let thinkingStartTime = 0;
+      let thinkingDuration = 0;
 
       await streamAIModelWithMessages(
         provider,
@@ -235,14 +271,29 @@ export function PromptWizardPage({ onNavigate }: PromptWizardPageProps) {
               chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
             }
           },
+          onThinkingToken: (token) => {
+            if (!isThinking) {
+              setIsThinking(true);
+              thinkingStartTime = Date.now();
+            }
+            accumulatedThinking += token;
+            setStreamingThinking(accumulatedThinking);
+          },
           onComplete: (finalContent) => {
+            abortControllerRef.current = null;
+            // 计算思考时间
+            if (thinkingStartTime > 0) {
+              thinkingDuration = Date.now() - thinkingStartTime;
+            }
+
             // 提取最终的思考内容
             const { thinking, content } = extractThinking(finalContent);
 
             const assistantMessage: ChatMessage = {
               role: 'assistant',
               content: content,
-              thinking: thinking || undefined,
+              thinking: thinking || accumulatedThinking || undefined,
+              thinkingDurationMs: (thinking || accumulatedThinking) ? thinkingDuration : undefined,
             };
             setMessages([...newMessages, assistantMessage]);
             setStreamingContent('');
@@ -254,9 +305,43 @@ export function PromptWizardPage({ onNavigate }: PromptWizardPageProps) {
             const promptMatch = content.match(/---PROMPT_START---\n?([\s\S]*?)\n?---PROMPT_END---/);
             if (promptMatch) {
               setGeneratedPrompt(promptMatch[1].trim());
+              setIsPromptPreviewOpen(true);
             }
           },
+          onAbort: () => {
+            abortControllerRef.current = null;
+
+            // 璁＄畻鎬濊€冩椂闂?
+            if (thinkingStartTime > 0) {
+              thinkingDuration = Date.now() - thinkingStartTime;
+            }
+
+            const { thinking, content } = extractThinking(fullContent);
+            const finalThinking = thinking || accumulatedThinking || undefined;
+
+            if (content || finalThinking) {
+              const assistantMessage: ChatMessage = {
+                role: 'assistant',
+                content,
+                thinking: finalThinking,
+                thinkingDurationMs: finalThinking ? thinkingDuration : undefined,
+              };
+              setMessages([...newMessages, assistantMessage]);
+
+              const promptMatch = content.match(/---PROMPT_START---\n?([\s\S]*?)\n?---PROMPT_END---/);
+              if (promptMatch) {
+                setGeneratedPrompt(promptMatch[1].trim());
+                setIsPromptPreviewOpen(true);
+              }
+            }
+
+            setStreamingContent('');
+            setStreamingThinking('');
+            setIsThinking(false);
+            setIsLoading(false);
+          },
           onError: (error) => {
+            abortControllerRef.current = null;
             showToast('error', error);
             setIsLoading(false);
             setStreamingContent('');
@@ -264,17 +349,40 @@ export function PromptWizardPage({ onNavigate }: PromptWizardPageProps) {
             setIsThinking(false);
           },
         },
-        currentFiles.length > 0 ? currentFiles : undefined
+        currentFiles.length > 0 ? currentFiles : undefined,
+        {
+          parameters: {
+            temperature: modelConfig.temperature,
+            top_p: modelConfig.top_p,
+            max_tokens: modelConfig.max_tokens,
+            frequency_penalty: modelConfig.frequency_penalty,
+            presence_penalty: modelConfig.presence_penalty,
+          },
+          reasoning: modelConfig.reasoning?.enabled
+            ? {
+                enabled: true,
+                effort: modelConfig.reasoning.effort,
+              }
+            : undefined,
+          signal: abortController.signal,
+        }
       );
     } catch (e) {
+      abortControllerRef.current = null;
       showToast('error', `${t('wizardSendFailed')}: ${e instanceof Error ? e.message : 'Unknown error'}`);
       setIsLoading(false);
       setStreamingContent('');
+      setStreamingThinking('');
+      setIsThinking(false);
     }
   };
 
   const handleSendMessage = () => {
     sendMessage(inputMessage);
+  };
+
+  const handleStopGenerating = () => {
+    abortControllerRef.current?.abort();
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -538,6 +646,7 @@ export function PromptWizardPage({ onNavigate }: PromptWizardPageProps) {
                       <ThinkingBlock
                         content={msg.thinking}
                         isStreaming={false}
+                        durationMs={msg.thinkingDurationMs}
                         defaultExpanded={false}
                       />
                     )}
@@ -629,7 +738,7 @@ export function PromptWizardPage({ onNavigate }: PromptWizardPageProps) {
           </div>
 
           {/* Generated Prompt Preview */}
-          {generatedPrompt && (
+          {generatedPrompt && isPromptPreviewOpen && (
             <div className="flex-shrink-0 mx-6 mb-4 p-4 bg-emerald-500/10 light:bg-emerald-50 border border-emerald-500/20 light:border-emerald-200 rounded-lg">
               <div className="flex items-center justify-between mb-2">
                 <div className="flex items-center gap-2">
@@ -649,6 +758,14 @@ export function PromptWizardPage({ onNavigate }: PromptWizardPageProps) {
                     <Save className="w-4 h-4" />
                     <span>{t('wizardSave')}</span>
                   </Button>
+                  <button
+                    onClick={() => setIsPromptPreviewOpen(false)}
+                    className="p-1.5 rounded hover:bg-emerald-500/20 text-emerald-400 light:text-emerald-600 transition-colors"
+                    title={tCommon('close')}
+                    aria-label={tCommon('close')}
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
                 </div>
               </div>
               <pre className="text-sm text-slate-300 light:text-slate-700 whitespace-pre-wrap font-mono max-h-32 overflow-y-auto">
@@ -660,18 +777,81 @@ export function PromptWizardPage({ onNavigate }: PromptWizardPageProps) {
           {/* Input Area */}
           <div className="flex-shrink-0 p-4 border-t border-slate-700 light:border-slate-200">
             <div className="max-w-3xl mx-auto space-y-3">
+              {!isPromptPreviewOpen && generatedPrompt && (
+                <div className="flex items-center justify-between px-3 py-2 bg-emerald-500/10 light:bg-emerald-50 border border-emerald-500/20 light:border-emerald-200 rounded-lg">
+                  <div className="flex items-center gap-2">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-400 light:text-emerald-600" />
+                    <span className="text-xs font-medium text-emerald-400 light:text-emerald-600">
+                      {t('wizardPromptGenerated')}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={handleCopyPrompt}
+                      className="p-1.5 rounded hover:bg-emerald-500/20 text-emerald-400 light:text-emerald-600 transition-colors"
+                      title={tCommon('copy')}
+                      aria-label={tCommon('copy')}
+                    >
+                      {copied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
+                    </button>
+                    <Button size="sm" onClick={() => setStep('result')}>
+                      <Save className="w-4 h-4" />
+                      <span>{t('wizardSave')}</span>
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      onClick={() => setIsPromptPreviewOpen(true)}
+                      title={tCommon('expand')}
+                    >
+                      <span>{tCommon('expand')}</span>
+                    </Button>
+                  </div>
+                </div>
+              )}
+
               {/* Model Selector in Chat */}
-              <div className="flex items-center gap-2">
-                <span className="text-xs text-slate-500 light:text-slate-600">{t('wizardCurrentModel')}</span>
-                <div className="flex-1 max-w-xs">
-                  <ModelSelector
-                    models={models}
-                    providers={providers}
-                    selectedModelId={selectedModelId}
-                    onSelect={setSelectedModelId}
+              <div className="flex items-center gap-4 flex-wrap">
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-slate-500 light:text-slate-600">{t('wizardCurrentModel')}</span>
+                  <div className="w-64">
+                    <ModelSelector
+                      models={models}
+                      providers={providers}
+                      selectedModelId={selectedModelId}
+                      onSelect={setSelectedModelId}
+                      disabled={isLoading}
+                      placeholder={t('wizardSelectModel')}
+                    />
+                  </div>
+                </div>
+                {/* Settings button with popover */}
+                <div className="relative" ref={parameterPanelRef}>
+                  <button
+                    onClick={() => setShowParameterPanel(!showParameterPanel)}
+                    className={`p-2 rounded-lg transition-colors ${
+                      showParameterPanel
+                        ? 'bg-cyan-500/20 text-cyan-400 light:bg-cyan-100 light:text-cyan-600'
+                        : 'text-slate-400 light:text-slate-500 hover:text-cyan-400 light:hover:text-cyan-600 hover:bg-slate-700 light:hover:bg-slate-100'
+                    }`}
+                    title={t('modelParameters')}
                     disabled={isLoading}
-                    placeholder={t('wizardSelectModel')}
-                  />
+                  >
+                    <Settings2 className="w-5 h-5" />
+                  </button>
+
+                  {/* Parameter Panel Popover */}
+                  {showParameterPanel && (
+                    <div className="absolute bottom-full right-0 mb-2 w-80 p-3 bg-slate-800 light:bg-white border border-slate-600 light:border-slate-200 rounded-lg shadow-xl z-50">
+                      <ParameterPanel
+                        config={modelConfig}
+                        onChange={setModelConfig}
+                        disabled={isLoading}
+                        defaultOpen={true}
+                        modelId={models.find(m => m.id === selectedModelId)?.model_id}
+                      />
+                    </div>
+                  )}
                 </div>
               </div>
 
@@ -736,13 +916,16 @@ export function PromptWizardPage({ onNavigate }: PromptWizardPageProps) {
                     }}
                   />
                   <Button
-                    onClick={handleSendMessage}
-                    disabled={(!inputMessage.trim() && attachedFiles.length === 0) || isLoading || !selectedModelId}
+                    onClick={isLoading ? handleStopGenerating : handleSendMessage}
+                    disabled={isLoading ? false : ((!inputMessage.trim() && attachedFiles.length === 0) || !selectedModelId)}
                     size="sm"
+                    variant={isLoading ? 'danger' : 'primary'}
                     className="rounded-lg"
+                    title={isLoading ? tCommon('stop') : undefined}
+                    aria-label={isLoading ? tCommon('stop') : undefined}
                   >
                     {isLoading ? (
-                      <Loader2 className="w-4 h-4 animate-spin" />
+                      <X className="w-4 h-4" />
                     ) : (
                       <Send className="w-4 h-4" />
                     )}

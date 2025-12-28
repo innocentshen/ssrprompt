@@ -1,6 +1,7 @@
-export type ProviderType = 'openai' | 'anthropic' | 'gemini' | 'azure' | 'custom';
+export type ProviderType = 'openai' | 'anthropic' | 'gemini' | 'custom' | 'openrouter';
 export type EvaluationStatus = 'pending' | 'running' | 'completed' | 'failed';
 export type TraceStatus = 'success' | 'error';
+export type ReasoningEffort = 'default' | 'none' | 'low' | 'medium' | 'high';
 
 export interface Provider {
   id: string;
@@ -21,6 +22,8 @@ export interface Model {
   name: string;
   capabilities: string[];
   supports_vision: boolean;
+  supports_reasoning: boolean;
+  supports_function_calling: boolean;
   created_at: string;
 }
 
@@ -58,6 +61,11 @@ export interface PromptVariable {
   required?: boolean;
 }
 
+export interface ReasoningConfig {
+  enabled: boolean;
+  effort: ReasoningEffort;
+}
+
 export interface PromptConfig {
   temperature: number;
   top_p: number;
@@ -65,6 +73,7 @@ export interface PromptConfig {
   presence_penalty: number;
   max_tokens: number;
   output_schema?: OutputSchema;
+  reasoning?: ReasoningConfig;
 }
 
 // Structured Output Types
@@ -93,6 +102,10 @@ export const DEFAULT_PROMPT_CONFIG: PromptConfig = {
   frequency_penalty: 0,
   presence_penalty: 0,
   max_tokens: 4096,
+  reasoning: {
+    enabled: false,
+    effort: 'default',
+  },
 };
 
 export interface PromptVersion {
@@ -202,6 +215,8 @@ export interface Trace {
   error_message: string | null;
   metadata: Record<string, unknown>;
   attachments?: FileAttachmentData[] | null;
+  thinking_content?: string | null;
+  thinking_time_ms?: number | null;
   created_at: string;
 }
 

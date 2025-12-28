@@ -11,9 +11,13 @@ import {
   RefreshCw,
   AlertCircle,
   CheckCircle2,
+  Image,
+  Brain,
+  Wrench,
 } from 'lucide-react';
 import { Button, Input, Select, Toggle, Modal, useToast } from '../ui';
 import type { Provider, Model, ProviderType } from '../../types';
+import { inferVisionSupport, inferReasoningSupport, inferFunctionCallingSupport } from '../../lib/model-capabilities';
 
 interface FetchedModel {
   id: string;
@@ -35,7 +39,7 @@ const providerTypesStatic = [
   { value: 'openai', label: 'OpenAI' },
   { value: 'anthropic', label: 'Anthropic' },
   { value: 'gemini', label: 'Google Gemini' },
-  { value: 'azure', label: 'Azure OpenAI' },
+  { value: 'openrouter', label: 'OpenRouter' },
   { value: 'custom', label: '', isCustom: true },
 ];
 
@@ -43,7 +47,7 @@ const defaultBaseUrls: Record<ProviderType, string> = {
   openai: 'https://api.openai.com',
   anthropic: 'https://api.anthropic.com',
   gemini: 'https://generativelanguage.googleapis.com',
-  azure: '',
+  openrouter: 'https://openrouter.ai/api',
   custom: '',
 };
 
@@ -150,16 +154,20 @@ export function ProviderForm({
 
       const effectiveBaseUrl = baseUrl || defaultBaseUrls[type];
 
-      if (type === 'openai' || type === 'custom' || type === 'azure') {
+      if (type === 'openai' || type === 'custom' || type === 'openrouter') {
         const cleanBaseUrl = effectiveBaseUrl.replace(/#$/, '').replace(/\/$/, '');
         modelsUrl = `${cleanBaseUrl}/v1/models`;
         headers['Authorization'] = `Bearer ${apiKey.split(',')[0].trim()}`;
+        if (type === 'openrouter') {
+          headers['HTTP-Referer'] = window.location.origin;
+        }
       } else if (type === 'anthropic') {
         showToast('info', t('anthropicNoAutoFetch'));
         setFetchingModels(false);
         return;
       } else if (type === 'gemini') {
-        modelsUrl = `https://generativelanguage.googleapis.com/v1/models?key=${apiKey.split(',')[0].trim()}`;
+        const cleanBaseUrl = effectiveBaseUrl.replace(/\/$/, '');
+        modelsUrl = `${cleanBaseUrl}/v1beta/models?key=${apiKey.split(',')[0].trim()}`;
       } else {
         showToast('error', t('providerNoAutoFetch'));
         setFetchingModels(false);
@@ -375,16 +383,36 @@ export function ProviderForm({
                     key={model.id}
                     className="flex items-center justify-between px-4 py-3"
                   >
-                    <div>
+                    <div className="flex-1 min-w-0">
                       <p className="text-sm font-medium text-slate-200 light:text-slate-800">{model.name}</p>
                       <p className="text-xs text-slate-500 light:text-slate-600">{model.model_id}</p>
                     </div>
-                    <button
-                      onClick={() => onRemoveModel(model.id)}
-                      className="p-1.5 text-slate-500 light:text-slate-400 hover:text-rose-500 hover:bg-slate-700 light:hover:bg-slate-200 rounded transition-colors"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
+                    <div className="flex items-center gap-2">
+                      {/* 能力图标 */}
+                      <div className="flex items-center gap-1">
+                        {(model.supports_vision ?? inferVisionSupport(model.model_id)) && (
+                          <span title={t('supportsVision')} className="p-1 rounded bg-slate-700/50 light:bg-slate-200">
+                            <Image className="w-3 h-3 text-cyan-400" />
+                          </span>
+                        )}
+                        {(model.supports_reasoning ?? inferReasoningSupport(model.model_id)) && (
+                          <span title={t('supportsReasoning')} className="p-1 rounded bg-slate-700/50 light:bg-slate-200">
+                            <Brain className="w-3 h-3 text-purple-400" />
+                          </span>
+                        )}
+                        {(model.supports_function_calling ?? inferFunctionCallingSupport(model.model_id)) && (
+                          <span title={t('supportsFunctionCalling')} className="p-1 rounded bg-slate-700/50 light:bg-slate-200">
+                            <Wrench className="w-3 h-3 text-amber-400" />
+                          </span>
+                        )}
+                      </div>
+                      <button
+                        onClick={() => onRemoveModel(model.id)}
+                        className="p-1.5 text-slate-500 light:text-slate-400 hover:text-rose-500 hover:bg-slate-700 light:hover:bg-slate-200 rounded transition-colors"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
                   </div>
                 ))
               )}

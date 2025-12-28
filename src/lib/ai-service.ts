@@ -1,4 +1,4 @@
-import type { Provider } from '../types';
+import type { Provider, ReasoningEffort } from '../types';
 import { isImageFile as checkIsImage, isPdfFile as checkIsPdf, isTextFile as checkIsText, readTextContent } from './file-utils';
 
 export interface FileAttachment {
@@ -81,6 +81,11 @@ export interface ModelParameters {
 export interface AICallOptions {
   responseFormat?: object;
   parameters?: ModelParameters;
+  reasoning?: {
+    enabled: boolean;
+    effort: ReasoningEffort;
+  };
+  signal?: AbortSignal;
 }
 
 export interface StreamUsage {
@@ -88,11 +93,188 @@ export interface StreamUsage {
   tokensOutput: number;
 }
 
+// 推理强度到 token 预算的映射
+const EFFORT_TO_BUDGET: Record<ReasoningEffort, number> = {
+  default: 0,
+  none: 0,
+  low: 0.05,
+  medium: 0.5,
+  high: 0.8,
+};
+
+/**
+ * 计算 Anthropic thinking token 预算
+ */
+function calculateThinkingBudget(
+  effort: ReasoningEffort,
+  tokenRange: { min: number; max: number } = { min: 1024, max: 64000 }
+): number {
+  const ratio = EFFORT_TO_BUDGET[effort];
+  return Math.round(tokenRange.min + (tokenRange.max - tokenRange.min) * ratio);
+}
+
+/**
+ * 构建推理参数
+ */
+export function buildReasoningParams(
+  providerType: string,
+  modelName: string,
+  reasoning?: { enabled: boolean; effort: ReasoningEffort },
+  baseUrl?: string
+): Record<string, unknown> {
+  const lowerModelName = modelName.toLowerCase();
+
+  // 检测是否是 OpenRouter（通过 base_url 判断）
+  const isOpenRouter = providerType === 'openrouter' || (baseUrl && baseUrl.includes('openrouter'));
+
+  // OpenRouter 使用 reasoning.effort 格式
+  if (isOpenRouter) {
+    if (!reasoning?.enabled || reasoning.effort === 'default' || reasoning.effort === 'none') {
+      return {};
+    }
+    return {
+      reasoning: {
+        effort: reasoning.effort,
+      },
+    };
+  }
+
+  // Gemini 2.5 Pro / Gemini 3 Pro 思考模式始终开启，需要特殊处理
+  // 即使用户选择 "default"，也需要让 Gemini 自己决定思考预算
+  if (providerType === 'gemini') {
+    // Gemini 2.5 Pro / Gemini 3 Pro: 思考无法关闭
+    if (/gemini-2\.5-pro|gemini-3.*pro/.test(lowerModelName)) {
+      // 如果用户选择了具体的 effort，计算对应的 budget
+      if (reasoning?.enabled && reasoning.effort !== 'default' && reasoning.effort !== 'none') {
+        const budget = calculateThinkingBudget(reasoning.effort, { min: 128, max: 32768 });
+        return {
+          generationConfig: {
+            thinkingConfig: {
+              thinkingBudget: budget,
+            },
+          },
+        };
+      }
+      // 默认情况下不传 thinkingConfig，让 Gemini 自己决定（但思考仍然开启）
+      return {};
+    }
+    // Gemini 2.5 Flash 等: 可以设置为 0 关闭思考
+    if (/gemini-2|gemini-3|gemini-.*thinking/.test(lowerModelName)) {
+      if (reasoning?.enabled && reasoning.effort !== 'default' && reasoning.effort !== 'none') {
+        const budget = calculateThinkingBudget(reasoning.effort, { min: 0, max: 24576 });
+        return {
+          generationConfig: {
+            thinkingConfig: {
+              thinkingBudget: budget,
+            },
+          },
+        };
+      }
+      return {};
+    }
+  }
+
+  // 其他模型：如果未启用或选择 default/none，返回空
+  if (!reasoning?.enabled || reasoning.effort === 'default' || reasoning.effort === 'none') {
+    return {};
+  }
+
+  const effort = reasoning.effort;
+
+  switch (providerType) {
+    case 'openai':
+      // OpenAI o1/o3/o4 系列支持 reasoning_effort
+      if (/^o[134]|gpt-5/.test(lowerModelName)) {
+        return { reasoning_effort: effort };
+      }
+      return {};
+
+    case 'anthropic':
+      // Claude 3.7+ 支持 thinking (3.5 不支持)
+      if (/claude-3\.[7-9]|claude-sonnet-4|claude-opus-4|claude-4/.test(lowerModelName)) {
+        const budget = calculateThinkingBudget(effort);
+        return {
+          thinking: {
+            type: 'enabled',
+            budget_tokens: budget,
+          },
+        };
+      }
+      return {};
+
+    // Gemini 已在函数开头处理，这里不再需要
+
+    case 'openrouter':
+      // OpenRouter 使用 reasoning.effort 格式
+      return {
+        reasoning: {
+          effort: effort,
+        },
+      };
+
+    case 'custom':
+      // Custom provider (包括 NewAPI、one-api 等中转站)
+      // 注意：中转站可能将请求路由到不同的后端（Bedrock、OpenRouter 等）
+      // 不同后端支持的参数格式不同，需要谨慎处理
+
+      // Gemini 系列 - 大多数中转站支持 reasoning.effort 格式
+      if (/gemini-2\.5|gemini-3|gemini-.*flash.*preview|gemini-.*pro.*preview/.test(lowerModelName)) {
+        return {
+          reasoning: {
+            effort: effort,
+          },
+        };
+      }
+
+      // Qwen 系列 (QwQ, Qwen3) - 使用 reasoning.effort 格式
+      if (/qwen3|qwq/.test(lowerModelName)) {
+        return {
+          reasoning: {
+            effort: effort,
+          },
+        };
+      }
+
+      // DeepSeek 系列 (R1, Reasoner) - 使用 reasoning.effort 格式
+      if (/deepseek-r|deepseek-reasoner/.test(lowerModelName)) {
+        return {
+          reasoning: {
+            effort: effort,
+          },
+        };
+      }
+
+      // 其他模型：如果模型名称包含 thinking/reasoning 关键词，尝试启用
+      if (/thinking|reasoning|r1/.test(lowerModelName)) {
+        return {
+          reasoning: {
+            effort: effort,
+          },
+        };
+      }
+
+      // Claude 和 OpenAI 系列：不发送 reasoning 参数
+      // 因为中转站可能将它们路由到 Bedrock 等后端，这些后端不支持 reasoning 参数
+      // 用户如果需要思考功能，应该使用原生 provider type (anthropic/openai)
+
+      // 默认不发送 reasoning 参数
+      return {};
+
+    default:
+      return {};
+  }
+}
+
 export interface StreamCallbacks {
   onToken: (token: string) => void;
   onThinkingToken?: (token: string) => void;
   onComplete?: (fullContent: string, thinking?: string, usage?: StreamUsage) => void;
   onError?: (error: string) => void;
+  onAbort?: () => void;
+}
+
+function isAbortError(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && 'name' in error && (error as { name?: unknown }).name === 'AbortError';
 }
 
 export async function fileToBase64(file: File): Promise<FileAttachment> {
@@ -145,8 +327,8 @@ export async function callAIModel(
       return await callAnthropic(provider, modelName, fullPrompt, files, options);
     case 'gemini':
       return await callGemini(provider, modelName, fullPrompt, files, options);
-    case 'azure':
-      return await callAzureOpenAI(provider, modelName, fullPrompt, files, options);
+    case 'openrouter':
+      return await callOpenRouter(provider, modelName, fullPrompt, files, options);
     case 'custom':
       return await callCustom(provider, modelName, fullPrompt, files, options);
     default:
@@ -237,13 +419,17 @@ export async function callAIModelWithMessages(
         if (params.temperature !== undefined) requestBody.temperature = params.temperature;
         if (params.top_p !== undefined) requestBody.top_p = params.top_p;
 
+        // 添加推理参数
+        const reasoningParams = buildReasoningParams('anthropic', modelName, options?.reasoning);
+        Object.assign(requestBody, reasoningParams);
+
         const response = await fetch(`${baseUrl}/v1/messages`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
             'x-api-key': provider.api_key!,
             'anthropic-version': '2023-06-01',
-            'anthropic-beta': 'pdfs-2024-09-25',
+            'anthropic-beta': 'pdfs-2024-09-25,interleaved-thinking-2025-05-14',
           },
           body: JSON.stringify(requestBody),
         });
@@ -294,6 +480,12 @@ export async function callAIModelWithMessages(
           requestBody.systemInstruction = { parts: [{ text: systemMessage.content }] };
         }
 
+        // 添加推理参数 (Gemini 的 thinkingConfig 需要合并到 generationConfig)
+        const reasoningParams = buildReasoningParams('gemini', modelName, options?.reasoning);
+        if (reasoningParams.generationConfig) {
+          Object.assign(generationConfig, reasoningParams.generationConfig);
+        }
+
         const response = await fetch(
           `${baseUrl}/v1beta/models/${modelName}:generateContent?key=${provider.api_key}`,
           {
@@ -319,59 +511,6 @@ export async function callAIModelWithMessages(
           content: data.candidates?.[0]?.content?.parts?.[0]?.text || '',
           tokensInput: data.usageMetadata?.promptTokenCount || 0,
           tokensOutput: data.usageMetadata?.candidatesTokenCount || 0,
-          latencyMs: Date.now() - startTime,
-        };
-      }
-
-      case 'azure': {
-        if (!provider.base_url) {
-          return {
-            content: '',
-            tokensInput: 0,
-            tokensOutput: 0,
-            latencyMs: Date.now() - startTime,
-            error: 'Azure OpenAI 需要配置 Base URL',
-          };
-        }
-
-        const requestBody: Record<string, unknown> = {
-          messages: messages.map((m) => ({ role: m.role, content: m.content })),
-          temperature: params.temperature ?? 0.7,
-          max_tokens: params.max_tokens ?? 4096,
-        };
-
-        if (params.top_p !== undefined) requestBody.top_p = params.top_p;
-        if (params.frequency_penalty !== undefined) requestBody.frequency_penalty = params.frequency_penalty;
-        if (params.presence_penalty !== undefined) requestBody.presence_penalty = params.presence_penalty;
-
-        const response = await fetch(
-          `${provider.base_url}/openai/deployments/${modelName}/chat/completions?api-version=2024-02-15-preview`,
-          {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'api-key': provider.api_key!,
-            },
-            body: JSON.stringify(requestBody),
-          }
-        );
-
-        if (!response.ok) {
-          const error = await response.text();
-          return {
-            content: '',
-            tokensInput: 0,
-            tokensOutput: 0,
-            latencyMs: Date.now() - startTime,
-            error: `Azure OpenAI API 错误: ${response.status} - ${error}`,
-          };
-        }
-
-        const data = await response.json();
-        return {
-          content: data.choices[0].message.content,
-          tokensInput: data.usage?.prompt_tokens || 0,
-          tokensOutput: data.usage?.completion_tokens || 0,
           latencyMs: Date.now() - startTime,
         };
       }
@@ -412,11 +551,17 @@ export async function streamAIModelWithMessages(
 
   const params = options?.parameters || {};
 
+  // Debug: 打印 provider 类型
+  console.log('[AI Service Debug] provider.type:', provider.type, 'modelName:', modelName);
+
   try {
     switch (provider.type) {
       case 'openai':
+      case 'openrouter':
       case 'custom': {
-        const baseUrl = provider.base_url || 'https://api.openai.com';
+        const baseUrl = provider.type === 'openrouter'
+          ? (provider.base_url || 'https://openrouter.ai/api')
+          : (provider.base_url || 'https://api.openai.com');
 
         // Build messages with file attachments for the last user message
         const apiMessages = messages.map((m, index) => {
@@ -466,6 +611,13 @@ export async function streamAIModelWithMessages(
         if (params.top_p !== undefined) requestBody.top_p = params.top_p;
         if (options?.responseFormat) requestBody.response_format = options.responseFormat;
 
+        // 添加推理参数（传入 baseUrl 以检测 OpenRouter）
+        const reasoningParams = buildReasoningParams(provider.type, modelName, options?.reasoning, baseUrl);
+        Object.assign(requestBody, reasoningParams);
+
+        // Debug: 打印请求体
+        console.log('[Custom API Debug] requestBody:', JSON.stringify(requestBody, null, 2));
+
         const response = await fetch(`${baseUrl}/v1/chat/completions`, {
           method: 'POST',
           headers: {
@@ -473,6 +625,7 @@ export async function streamAIModelWithMessages(
             'Authorization': `Bearer ${provider.api_key}`,
           },
           body: JSON.stringify(requestBody),
+          signal: options?.signal,
         });
 
         if (!response.ok) {
@@ -508,6 +661,11 @@ export async function streamAIModelWithMessages(
                 const parsed = JSON.parse(data);
                 const choice = parsed.choices?.[0];
                 const delta = choice?.delta;
+
+                // Debug: 打印完整的 choice 结构（只打印前几次）
+                if (choice && fullContent.length < 100) {
+                  console.log('[Custom API Debug] full choice:', JSON.stringify(choice));
+                }
 
                 // 处理标准 content
                 if (delta?.content) {
@@ -615,15 +773,20 @@ export async function streamAIModelWithMessages(
         if (systemMessage) requestBody.system = systemMessage.content;
         if (params.temperature !== undefined) requestBody.temperature = params.temperature;
 
+        // 添加推理参数
+        const reasoningParams = buildReasoningParams('anthropic', modelName, options?.reasoning);
+        Object.assign(requestBody, reasoningParams);
+
         const response = await fetch(`${baseUrl}/v1/messages`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
             'x-api-key': provider.api_key!,
             'anthropic-version': '2023-06-01',
-            'anthropic-beta': 'pdfs-2024-09-25',
+            'anthropic-beta': 'pdfs-2024-09-25,interleaved-thinking-2025-05-14',
           },
           body: JSON.stringify(requestBody),
+          signal: options?.signal,
         });
 
         if (!response.ok) {
@@ -640,7 +803,9 @@ export async function streamAIModelWithMessages(
 
         const decoder = new TextDecoder();
         let fullContent = '';
+        let fullThinking = '';
         let usage: StreamUsage = { tokensInput: 0, tokensOutput: 0 };
+        let currentBlockType: 'text' | 'thinking' | null = null;
 
         while (true) {
           const { done, value } = await reader.read();
@@ -654,11 +819,32 @@ export async function streamAIModelWithMessages(
               const data = line.slice(6);
               try {
                 const parsed = JSON.parse(data);
-                // Extract content from content_block_delta
-                if (parsed.type === 'content_block_delta' && parsed.delta?.text) {
-                  fullContent += parsed.delta.text;
-                  callbacks.onToken(parsed.delta.text);
+
+                // Track content block type (text or thinking)
+                if (parsed.type === 'content_block_start') {
+                  if (parsed.content_block?.type === 'thinking') {
+                    currentBlockType = 'thinking';
+                  } else if (parsed.content_block?.type === 'text') {
+                    currentBlockType = 'text';
+                  }
                 }
+
+                // Handle content_block_delta
+                if (parsed.type === 'content_block_delta') {
+                  // Handle thinking delta
+                  if (parsed.delta?.type === 'thinking_delta' && parsed.delta?.thinking) {
+                    fullThinking += parsed.delta.thinking;
+                    callbacks.onThinkingToken?.(parsed.delta.thinking);
+                    await new Promise(resolve => requestAnimationFrame(() => resolve(undefined)));
+                  }
+                  // Handle text delta
+                  else if (parsed.delta?.text) {
+                    fullContent += parsed.delta.text;
+                    callbacks.onToken(parsed.delta.text);
+                    await new Promise(resolve => requestAnimationFrame(() => resolve(undefined)));
+                  }
+                }
+
                 // Extract input_tokens from message_start
                 if (parsed.type === 'message_start' && parsed.message?.usage) {
                   usage.tokensInput = parsed.message.usage.input_tokens || 0;
@@ -674,7 +860,7 @@ export async function streamAIModelWithMessages(
           }
         }
 
-        callbacks.onComplete?.(fullContent, undefined, usage);
+        callbacks.onComplete?.(fullContent, fullThinking || undefined, usage);
         break;
       }
 
@@ -727,12 +913,19 @@ export async function streamAIModelWithMessages(
           requestBody.systemInstruction = { parts: [{ text: systemMessage.content }] };
         }
 
+        // 添加推理参数 (Gemini 的 thinkingConfig 需要合并到 generationConfig)
+        const reasoningParams = buildReasoningParams('gemini', modelName, options?.reasoning);
+        if (reasoningParams.generationConfig) {
+          Object.assign(generationConfig, reasoningParams.generationConfig);
+        }
+
         const response = await fetch(
           `${baseUrl}/v1beta/models/${modelName}:streamGenerateContent?alt=sse&key=${provider.api_key}`,
           {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(requestBody),
+            signal: options?.signal,
           }
         );
 
@@ -750,6 +943,7 @@ export async function streamAIModelWithMessages(
 
         const decoder = new TextDecoder();
         let fullContent = '';
+        let fullThinking = '';
         let usage: StreamUsage = { tokensInput: 0, tokensOutput: 0 };
 
         while (true) {
@@ -764,10 +958,24 @@ export async function streamAIModelWithMessages(
               const data = line.slice(6);
               try {
                 const parsed = JSON.parse(data);
-                const text = parsed.candidates?.[0]?.content?.parts?.[0]?.text;
-                if (text) {
-                  fullContent += text;
-                  callbacks.onToken(text);
+                const parts = parsed.candidates?.[0]?.content?.parts;
+                // Debug: 打印 Gemini 返回的 parts 结构
+                if (parts && Array.isArray(parts)) {
+                  console.log('[Gemini Debug] parts:', JSON.stringify(parts, null, 2));
+                }
+                if (parts && Array.isArray(parts)) {
+                  for (const part of parts) {
+                    // Gemini 2.5 思考内容: part.thought 为 true 表示是思考内容
+                    if (part.thought === true && part.text) {
+                      fullThinking += part.text;
+                      callbacks.onThinkingToken?.(part.text);
+                      await new Promise(resolve => requestAnimationFrame(() => resolve(undefined)));
+                    } else if (part.text && !part.thought) {
+                      // 普通文本内容
+                      fullContent += part.text;
+                      callbacks.onToken(part.text);
+                    }
+                  }
                 }
                 // Extract usage from usageMetadata
                 if (parsed.usageMetadata) {
@@ -783,87 +991,7 @@ export async function streamAIModelWithMessages(
           }
         }
 
-        callbacks.onComplete?.(fullContent, undefined, usage);
-        break;
-      }
-
-      case 'azure': {
-        if (!provider.base_url) {
-          callbacks.onError?.('Azure OpenAI 需要配置 Base URL');
-          return;
-        }
-
-        const requestBody: Record<string, unknown> = {
-          messages: messages.map((m) => ({ role: m.role, content: m.content })),
-          temperature: params.temperature ?? 0.7,
-          max_tokens: params.max_tokens ?? 4096,
-          stream: true,
-          stream_options: { include_usage: true },
-        };
-
-        if (options?.responseFormat) requestBody.response_format = options.responseFormat;
-
-        const response = await fetch(
-          `${provider.base_url}/openai/deployments/${modelName}/chat/completions?api-version=2024-02-15-preview`,
-          {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'api-key': provider.api_key!,
-            },
-            body: JSON.stringify(requestBody),
-          }
-        );
-
-        if (!response.ok) {
-          const error = await response.text();
-          callbacks.onError?.(`Azure OpenAI API 错误: ${response.status} - ${error}`);
-          return;
-        }
-
-        const reader = response.body?.getReader();
-        if (!reader) {
-          callbacks.onError?.('无法读取响应流');
-          return;
-        }
-
-        const decoder = new TextDecoder();
-        let fullContent = '';
-        let usage: StreamUsage = { tokensInput: 0, tokensOutput: 0 };
-
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-
-          const chunk = decoder.decode(value, { stream: true });
-          const lines = chunk.split('\n');
-
-          for (const line of lines) {
-            if (line.startsWith('data: ')) {
-              const data = line.slice(6);
-              if (data === '[DONE]') continue;
-              try {
-                const parsed = JSON.parse(data);
-                const content = parsed.choices?.[0]?.delta?.content;
-                if (content) {
-                  fullContent += content;
-                  callbacks.onToken(content);
-                }
-                // Extract usage from the final chunk
-                if (parsed.usage) {
-                  usage = {
-                    tokensInput: parsed.usage.prompt_tokens || 0,
-                    tokensOutput: parsed.usage.completion_tokens || 0,
-                  };
-                }
-              } catch {
-                // Ignore JSON parse errors
-              }
-            }
-          }
-        }
-
-        callbacks.onComplete?.(fullContent, undefined, usage);
+        callbacks.onComplete?.(fullContent, fullThinking || undefined, usage);
         break;
       }
 
@@ -871,6 +999,10 @@ export async function streamAIModelWithMessages(
         callbacks.onError?.(`不支持的服务商类型: ${provider.type}`);
     }
   } catch (e) {
+    if (isAbortError(e)) {
+      callbacks.onAbort?.();
+      return;
+    }
     callbacks.onError?.(e instanceof Error ? e.message : 'Unknown error');
   }
 }
@@ -972,6 +1104,10 @@ async function callOpenAI(
   if (options?.responseFormat) {
     requestBody.response_format = options.responseFormat;
   }
+
+  // 添加推理参数
+  const reasoningParams = buildReasoningParams('openai', modelName, options?.reasoning);
+  Object.assign(requestBody, reasoningParams);
 
   const response = await fetch(`${baseUrl}/v1/chat/completions`, {
     method: 'POST',
@@ -1075,13 +1211,17 @@ async function callAnthropic(
     requestBody.top_p = params.top_p;
   }
 
+  // 添加推理参数
+  const reasoningParams = buildReasoningParams('anthropic', modelName, options?.reasoning);
+  Object.assign(requestBody, reasoningParams);
+
   const response = await fetch(`${baseUrl}/v1/messages`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       'x-api-key': provider.api_key!,
       'anthropic-version': '2023-06-01',
-      'anthropic-beta': 'pdfs-2024-09-25',
+      'anthropic-beta': 'pdfs-2024-09-25,interleaved-thinking-2025-05-14',
     },
     body: JSON.stringify(requestBody),
   });
@@ -1172,6 +1312,12 @@ async function callGemini(
     }
   }
 
+  // 添加推理参数 (Gemini 的 thinkingConfig 需要合并到 generationConfig)
+  const reasoningParams = buildReasoningParams('gemini', modelName, options?.reasoning);
+  if (reasoningParams.generationConfig) {
+    Object.assign(requestBody.generationConfig as Record<string, unknown>, reasoningParams.generationConfig);
+  }
+
   const response = await fetch(
     `${baseUrl}/v1beta/models/${modelName}:generateContent?key=${provider.api_key}`,
     {
@@ -1199,71 +1345,6 @@ async function callGemini(
     content,
     tokensInput,
     tokensOutput,
-    latencyMs,
-  };
-}
-
-async function callAzureOpenAI(
-  provider: Provider,
-  modelName: string,
-  prompt: string,
-  files?: FileAttachment[],
-  options?: AICallOptions
-): Promise<AIResponse> {
-  const startTime = Date.now();
-
-  if (!provider.base_url) {
-    throw new Error('Azure OpenAI 需要配置 Base URL');
-  }
-
-  const params = options?.parameters || {};
-
-  const requestBody: Record<string, unknown> = {
-    messages: [
-      {
-        role: 'user',
-        content: buildOpenAIContent(prompt, files),
-      },
-    ],
-    temperature: params.temperature ?? 0.7,
-    max_tokens: params.max_tokens ?? 4096,
-  };
-
-  if (params.top_p !== undefined) {
-    requestBody.top_p = params.top_p;
-  }
-  if (params.frequency_penalty !== undefined) {
-    requestBody.frequency_penalty = params.frequency_penalty;
-  }
-  if (params.presence_penalty !== undefined) {
-    requestBody.presence_penalty = params.presence_penalty;
-  }
-
-  if (options?.responseFormat) {
-    requestBody.response_format = options.responseFormat;
-  }
-
-  const response = await fetch(`${provider.base_url}/openai/deployments/${modelName}/chat/completions?api-version=2024-02-15-preview`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'api-key': provider.api_key!,
-    },
-    body: JSON.stringify(requestBody),
-  });
-
-  if (!response.ok) {
-    const error = await response.text();
-    throw new Error(`Azure OpenAI API 错误: ${response.status} - ${error}`);
-  }
-
-  const data = await response.json();
-  const latencyMs = Date.now() - startTime;
-
-  return {
-    content: data.choices[0].message.content,
-    tokensInput: data.usage?.prompt_tokens || 0,
-    tokensOutput: data.usage?.completion_tokens || 0,
     latencyMs,
   };
 }
@@ -1309,6 +1390,10 @@ async function callCustom(
     requestBody.response_format = options.responseFormat;
   }
 
+  // 添加推理参数
+  const reasoningParams = buildReasoningParams('custom', modelName, options?.reasoning);
+  Object.assign(requestBody, reasoningParams);
+
   const response = await fetch(`${provider.base_url}/v1/chat/completions`, {
     method: 'POST',
     headers: {
@@ -1328,6 +1413,80 @@ async function callCustom(
 
   return {
     content: data.choices[0].message.content,
+    tokensInput: data.usage?.prompt_tokens || 0,
+    tokensOutput: data.usage?.completion_tokens || 0,
+    latencyMs,
+  };
+}
+
+async function callOpenRouter(
+  provider: Provider,
+  modelName: string,
+  prompt: string,
+  files?: FileAttachment[],
+  options?: AICallOptions
+): Promise<AIResponse> {
+  const startTime = Date.now();
+  const baseUrl = provider.base_url || 'https://openrouter.ai/api';
+  const params = options?.parameters || {};
+
+  const requestBody: Record<string, unknown> = {
+    model: modelName,
+    messages: [
+      {
+        role: 'user',
+        content: buildOpenAIContent(prompt, files),
+      },
+    ],
+    temperature: params.temperature ?? 0.7,
+    max_tokens: params.max_tokens ?? 4096,
+  };
+
+  if (params.top_p !== undefined) {
+    requestBody.top_p = params.top_p;
+  }
+  if (params.frequency_penalty !== undefined) {
+    requestBody.frequency_penalty = params.frequency_penalty;
+  }
+  if (params.presence_penalty !== undefined) {
+    requestBody.presence_penalty = params.presence_penalty;
+  }
+
+  if (options?.responseFormat) {
+    requestBody.response_format = options.responseFormat;
+  }
+
+  // 添加推理参数
+  const reasoningParams = buildReasoningParams('openrouter', modelName, options?.reasoning);
+  Object.assign(requestBody, reasoningParams);
+
+  const response = await fetch(`${baseUrl}/v1/chat/completions`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${provider.api_key}`,
+      'HTTP-Referer': typeof window !== 'undefined' ? window.location.origin : 'http://localhost',
+    },
+    body: JSON.stringify(requestBody),
+  });
+
+  if (!response.ok) {
+    const error = await response.text();
+    throw new Error(`OpenRouter API 错误: ${response.status} - ${error}`);
+  }
+
+  const data = await response.json();
+  const latencyMs = Date.now() - startTime;
+
+  // 提取思考内容（如果有）
+  let thinking = '';
+  if (data.choices[0]?.message?.reasoning) {
+    thinking = data.choices[0].message.reasoning;
+  }
+
+  return {
+    content: data.choices[0].message.content,
+    thinking: thinking || undefined,
     tokensInput: data.usage?.prompt_tokens || 0,
     tokensOutput: data.usage?.completion_tokens || 0,
     latencyMs,

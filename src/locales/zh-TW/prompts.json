@@ -49,6 +49,7 @@
   "configureModelProviderFirst": "請先在設定中設定並啟用模型服務商",
   "runComplete": "執行完成",
   "runFailed": "執行失敗",
+  "runStopped": "已停止",
   "unknownError": "未知錯誤",
   "deleteFailed": "刪除失敗",
   "promptDeleted": "Prompt 已刪除",
@@ -288,5 +289,6 @@
   "wizardTemplateInitialCodeAssistant": "我想建立一個程式碼助手，幫助我編寫和理解程式碼。",
   "wizardTemplateInitialTranslator": "我想建立一個翻譯助手，能夠進行準確的多語言翻譯。",
   "wizardTemplateInitialDataAnalyzer": "我想建立一個資料分析助手，幫助分析資料並提供洞察。",
-  "wizardTemplateInitialCustomerService": "我想建立一個客服助手，能夠友善地回答客戶問題。"
+  "wizardTemplateInitialCustomerService": "我想建立一個客服助手，能夠友善地回答客戶問題。",
+  "reasoningEffort": "推理強度"
 }

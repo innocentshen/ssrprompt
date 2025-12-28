@@ -31,7 +31,7 @@ import { Button, Input, Modal, Badge, Select, MarkdownRenderer, Tabs, Collapsibl
 import { MessageList, ParameterPanel, VariableEditor, DebugHistory, PromptOptimizer, PromptObserver, StructuredOutputEditor, ThinkingBlock, AttachmentModal } from '../components/Prompt';
 import type { DebugRun } from '../components/Prompt';
 import { getDatabase, isDatabaseConfigured } from '../lib/database';
-import { callAIModel, streamAIModel, fileToBase64, extractThinking, type FileAttachment, type StreamUsage } from '../lib/ai-service';
+import { callAIModel, streamAIModel, fileToBase64, extractThinking, type AICallOptions, type FileAttachment, type StreamUsage } from '../lib/ai-service';
 import { analyzePrompt, type PromptAnalysisResult } from '../lib/prompt-analyzer';
 import { toResponseFormat } from '../lib/schema-utils';
 import { getFileInputAccept, isSupportedFileType } from '../lib/file-utils';
@@ -126,6 +126,7 @@ export function PromptsPage() {
   const cancelAutoSaveRef = useRef<(() => void) | null>(null);
   const lastSyncedPromptIdRef = useRef<string | null>(null);
   const isPromptSwitchingRef = useRef(false);
+  const runAbortControllerRef = useRef<AbortController | null>(null);
 
   // Auto-save debounced function
   const debouncedAutoSave = useMemo(
@@ -180,6 +181,12 @@ export function PromptsPage() {
 
   useEffect(() => {
     loadData();
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      runAbortControllerRef.current?.abort();
+    };
   }, []);
 
   // Set default model when models are loaded
@@ -430,6 +437,10 @@ export function PromptsPage() {
     return result;
   }, [promptVariables]);
 
+  const handleStopRun = () => {
+    runAbortControllerRef.current?.abort();
+  };
+
   const handleRun = async () => {
     let finalPrompt = buildPromptFromMessages();
     if (!finalPrompt) {
@@ -448,6 +459,10 @@ export function PromptsPage() {
       return;
     }
 
+    runAbortControllerRef.current?.abort();
+    const runAbortController = new AbortController();
+    runAbortControllerRef.current = runAbortController;
+
     setRunning(true);
     setTestOutput('');
     setThinkingContent('');
@@ -459,7 +474,7 @@ export function PromptsPage() {
 
     try {
       // Build options with parameters and response format
-      const options: { responseFormat?: object; parameters?: object } = {
+      const options: AICallOptions = {
         parameters: {
           temperature: promptConfig.temperature,
           top_p: promptConfig.top_p,
@@ -467,10 +482,19 @@ export function PromptsPage() {
           frequency_penalty: promptConfig.frequency_penalty,
           presence_penalty: promptConfig.presence_penalty,
         },
+        signal: runAbortController.signal,
       };
 
       if (promptConfig.output_schema?.enabled) {
         options.responseFormat = toResponseFormat(promptConfig.output_schema);
+      }
+
+      // 添加推理配置
+      if (promptConfig.reasoning?.enabled && promptConfig.reasoning?.effort !== 'default') {
+        options.reasoning = {
+          enabled: true,
+          effort: promptConfig.reasoning.effort,
+        };
       }
 
       let fullContent = '';
@@ -479,7 +503,7 @@ export function PromptsPage() {
 
       await streamAIModel(
         provider,
-        model.name,
+        model.model_id,
         finalPrompt,
         {
           onToken: (token) => {
@@ -521,6 +545,7 @@ export function PromptsPage() {
             });
           },
           onComplete: async (finalContent, _thinking, usage) => {
+            runAbortControllerRef.current = null;
             const latencyMs = Date.now() - startTime;
 
             // Get token counts from usage
@@ -576,7 +601,14 @@ export function PromptsPage() {
               console.error('Failed to save trace:', e);
             }
           },
+          onAbort: () => {
+            runAbortControllerRef.current = null;
+            setIsThinking(false);
+            setRunning(false);
+            showToast('info', t('runStopped'));
+          },
           onError: async (error) => {
+            runAbortControllerRef.current = null;
             setTestOutput(`**[${t('error')}]**\n\n${error}\n\n${t('errorCheckList')}`);
 
             // Add to debug history
@@ -741,7 +773,7 @@ export function PromptsPage() {
         return [];
       }
 
-      const result = await analyzePrompt(provider, model.name, {
+      const result = await analyzePrompt(provider, model.model_id, {
         messages: promptMessages,
         content: promptContent,
         variables: promptVariables,
@@ -952,8 +984,8 @@ export function PromptsPage() {
         }
 
         const [result1, result2] = await Promise.allSettled([
-          callAIModel(provider1, model1.name, version.content, compareInput, compareFiles.length > 0 ? compareFiles : undefined),
-          callAIModel(provider2, model2.name, version.content, compareInput, compareFiles.length > 0 ? compareFiles : undefined),
+          callAIModel(provider1, model1.model_id, version.content, compareInput, compareFiles.length > 0 ? compareFiles : undefined),
+          callAIModel(provider2, model2.model_id, version.content, compareInput, compareFiles.length > 0 ? compareFiles : undefined),
         ]);
 
         setCompareResults({
@@ -981,8 +1013,8 @@ export function PromptsPage() {
         if (!version1 || !version2) return;
 
         const [result1, result2] = await Promise.allSettled([
-          callAIModel(provider, model.name, version1.content, compareInput, compareFiles.length > 0 ? compareFiles : undefined),
-          callAIModel(provider, model.name, version2.content, compareInput, compareFiles.length > 0 ? compareFiles : undefined),
+          callAIModel(provider, model.model_id, version1.content, compareInput, compareFiles.length > 0 ? compareFiles : undefined),
+          callAIModel(provider, model.model_id, version2.content, compareInput, compareFiles.length > 0 ? compareFiles : undefined),
         ]);
 
         setCompareResults({
@@ -1287,6 +1319,7 @@ export function PromptsPage() {
                       <ParameterPanel
                         config={promptConfig}
                         onChange={setPromptConfig}
+                        modelId={models.find(m => m.id === selectedModel)?.model_id}
                       />
 
                       {/* Variable editor */}
@@ -1443,10 +1476,17 @@ export function PromptsPage() {
                         )}
                       </div>
 
-                      <Button className="w-full" onClick={handleRun} loading={running}>
-                        <Play className="w-4 h-4" />
-                        <span>{t('run')}</span>
-                      </Button>
+                      {running ? (
+                        <Button className="w-full" variant="danger" onClick={handleStopRun}>
+                          <X className="w-4 h-4" />
+                          <span>{tCommon('stop')}</span>
+                        </Button>
+                      ) : (
+                        <Button className="w-full" onClick={handleRun}>
+                          <Play className="w-4 h-4" />
+                          <span>{t('run')}</span>
+                        </Button>
+                      )}
 
                       {/* Thinking Block */}
                       {(thinkingContent || isThinking) && (

@@ -2,6 +2,7 @@
   "loading": "載入中...",
   "save": "儲存",
   "cancel": "取消",
+  "stop": "停止",
   "delete": "刪除",
   "edit": "編輯",
   "create": "建立",
@@ -64,5 +65,16 @@
   "rotate": "旋轉",
   "cannotPreviewFileType": "無法預覽此檔案類型",
   "clickDownloadToGetFile": "點擊下載按鈕取得檔案",
-  "judgeModelDescription": "評價模型用於對被測模型的輸出進行AI打分和評價"
+  "judgeModelDescription": "評價模型用於對被測模型的輸出進行AI打分和評價",
+  "reasoningEffort": "推理強度",
+  "reasoningDefault": "預設",
+  "reasoningDefaultDesc": "使用模型預設設定",
+  "reasoningNone": "關閉",
+  "reasoningNoneDesc": "不啟用擴展思考",
+  "reasoningLow": "浮想",
+  "reasoningLowDesc": "快速簡短的思考",
+  "reasoningMedium": "斟酌",
+  "reasoningMediumDesc": "平衡速度和深度",
+  "reasoningHigh": "沉思",
+  "reasoningHighDesc": "深度推理分析"
 }

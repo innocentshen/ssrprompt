@@ -17,8 +17,8 @@ const PROVIDER_COLORS: Record<string, string> = {
   openai: 'bg-emerald-500',
   anthropic: 'bg-orange-500',
   gemini: 'bg-blue-500',
-  azure: 'bg-sky-500',
-  custom: 'bg-purple-500',
+  openrouter: 'bg-purple-500',
+  custom: 'bg-slate-500',
 };
 
 // 供应商显示名称
@@ -26,7 +26,7 @@ const PROVIDER_NAMES: Record<string, string> = {
   openai: 'OpenAI',
   anthropic: 'Anthropic',
   gemini: 'Google',
-  azure: 'Azure',
+  openrouter: 'OpenRouter',
   custom: 'Custom',
 };
 
@@ -160,7 +160,7 @@ export function ModelSelector({
       {/* 下拉面板 */}
       {isOpen && (
         <div
-          className={`absolute z-50 w-full bg-slate-800 light:bg-white border border-slate-600 light:border-slate-300 rounded-lg shadow-xl overflow-hidden ${
+          className={`absolute z-50 w-full min-w-[280px] bg-slate-800 light:bg-white border border-slate-600 light:border-slate-300 rounded-lg shadow-xl overflow-hidden ${
             openDirection === 'up' ? 'bottom-full mb-1' : 'top-full mt-1'
           }`}
         >

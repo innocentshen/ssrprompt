@@ -1,4 +1,4 @@
-import { Plus, Cloud, Bot, Sparkles, Cpu, Server } from 'lucide-react';
+import { Plus, Bot, Sparkles, Cpu, Server, Globe } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { Provider } from '../../types';
 
@@ -9,11 +9,11 @@ interface ProviderListProps {
   onAdd: () => void;
 }
 
-const providerIcons: Record<string, typeof Cloud> = {
+const providerIcons: Record<string, typeof Bot> = {
   openai: Sparkles,
   anthropic: Bot,
   gemini: Cpu,
-  azure: Cloud,
+  openrouter: Globe,
   custom: Server,
 };
 
@@ -21,7 +21,7 @@ const providerColors: Record<string, string> = {
   openai: 'from-emerald-500 to-green-500',
   anthropic: 'from-amber-500 to-orange-500',
   gemini: 'from-blue-500 to-cyan-500',
-  azure: 'from-sky-500 to-blue-500',
+  openrouter: 'from-purple-500 to-pink-500',
   custom: 'from-slate-500 to-slate-600',
 };
 

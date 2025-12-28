@@ -20,7 +20,7 @@ CREATE TABLE IF NOT EXISTS providers (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id uuid,
   name text NOT NULL,
-  type text NOT NULL CHECK (type IN ('openai', 'anthropic', 'gemini', 'azure', 'custom')),
+  type text NOT NULL CHECK (type IN ('openai', 'anthropic', 'gemini', 'custom', 'openrouter')),
   api_key text NOT NULL,
   base_url text,
   enabled boolean DEFAULT false,
@@ -36,6 +36,8 @@ CREATE TABLE IF NOT EXISTS models (
   name text NOT NULL,
   capabilities text[] DEFAULT '{}',
   supports_vision boolean DEFAULT true,
+  supports_reasoning boolean DEFAULT false,
+  supports_function_calling boolean DEFAULT false,
   created_at timestamptz DEFAULT now()
 );
 
@@ -153,6 +155,8 @@ CREATE TABLE IF NOT EXISTS traces (
   error_message text,
   metadata jsonb DEFAULT '{}',
   attachments jsonb NOT NULL DEFAULT '[]',
+  thinking_content text,
+  thinking_time_ms integer,
   created_at timestamptz DEFAULT now()
 );
 

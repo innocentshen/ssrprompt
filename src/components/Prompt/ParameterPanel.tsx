@@ -1,20 +1,32 @@
 import { useTranslation } from 'react-i18next';
 import { Settings2, RotateCcw } from 'lucide-react';
-import { PromptConfig, DEFAULT_PROMPT_CONFIG } from '../../types/database';
+import { PromptConfig, DEFAULT_PROMPT_CONFIG, ReasoningEffort } from '../../types/database';
 import { Slider, Collapsible, Button } from '../ui';
+import { ReasoningSelector } from '../Common/ReasoningSelector';
 
 interface ParameterPanelProps {
   config: PromptConfig;
   onChange: (config: PromptConfig) => void;
   disabled?: boolean;
   defaultOpen?: boolean;
+  modelId?: string;  // 模型ID，用于推理能力检测
 }
 
-export function ParameterPanel({ config, onChange, disabled = false, defaultOpen = false }: ParameterPanelProps) {
+export function ParameterPanel({ config, onChange, disabled = false, defaultOpen = false, modelId }: ParameterPanelProps) {
   const { t } = useTranslation('prompts');
 
   const handleChange = (key: keyof PromptConfig, value: number) => {
     onChange({ ...config, [key]: value });
+  };
+
+  const handleReasoningChange = (effort: ReasoningEffort) => {
+    onChange({
+      ...config,
+      reasoning: {
+        enabled: effort !== 'default',
+        effort,
+      },
+    });
   };
 
   const handleReset = () => {
@@ -97,6 +109,21 @@ export function ParameterPanel({ config, onChange, disabled = false, defaultOpen
           tooltip={t('maxTokensTooltip')}
           disabled={disabled}
         />
+
+        {/* 推理/思考配置 */}
+        {modelId && (
+          <div className="pt-2 border-t border-slate-700 light:border-slate-200">
+            <div className="flex items-center justify-between">
+              <span className="text-sm text-slate-300 light:text-slate-700">{t('reasoningEffort')}</span>
+              <ReasoningSelector
+                modelId={modelId}
+                value={config.reasoning?.effort || 'default'}
+                onChange={handleReasoningChange}
+                disabled={disabled}
+              />
+            </div>
+          </div>
+        )}
       </div>
     </Collapsible>
   );

@@ -2,6 +2,7 @@
   "loading": "読み込み中...",
   "save": "保存",
   "cancel": "キャンセル",
+  "stop": "停止",
   "delete": "削除",
   "edit": "編集",
   "create": "作成",
@@ -64,5 +65,16 @@
   "rotate": "回転",
   "cannotPreviewFileType": "このファイルタイプはプレビューできません",
   "clickDownloadToGetFile": "ダウンロードボタンをクリックしてファイルを取得",
-  "judgeModelDescription": "評価モデルは被テストモデルの出力をAIで採点・評価するために使用されます"
+  "judgeModelDescription": "評価モデルは被テストモデルの出力をAIで採点・評価するために使用されます",
+  "reasoningEffort": "推論強度",
+  "reasoningDefault": "デフォルト",
+  "reasoningDefaultDesc": "モデルのデフォルト設定を使用",
+  "reasoningNone": "オフ",
+  "reasoningNoneDesc": "拡張思考を無効化",
+  "reasoningLow": "低",
+  "reasoningLowDesc": "迅速で簡潔な思考",
+  "reasoningMedium": "中",
+  "reasoningMediumDesc": "速度と深さのバランス",
+  "reasoningHigh": "高",
+  "reasoningHighDesc": "深い推論分析"
 }

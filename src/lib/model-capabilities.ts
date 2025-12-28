@@ -6,8 +6,10 @@ import type { ProviderType } from '../types/database';
  */
 
 export interface ModelCapabilities {
-  supportsVision: boolean;  // 支持图片
-  supportsPdf: boolean;     // 支持 PDF
+  supportsVision: boolean;           // 支持图片
+  supportsPdf: boolean;              // 支持 PDF
+  supportsReasoning: boolean;        // 支持推理/思考
+  supportsFunctionCalling: boolean;  // 支持函数调用
 }
 
 export interface FileUploadCapabilities {
@@ -48,6 +50,37 @@ const NON_VISION_MODEL_PATTERNS = [
   'ada',
 ];
 
+// 支持推理/思考的模型关键词
+const REASONING_MODEL_PATTERNS = [
+  'o1',           // OpenAI o1
+  'o3',           // OpenAI o3
+  'o4',           // OpenAI o4 (future)
+  'gpt-5',        // OpenAI GPT-5
+  'claude-3.7',   // Claude 3.7+ 支持 extended thinking
+  'claude-sonnet-4',  // Claude Sonnet 4
+  'claude-opus-4',    // Claude Opus 4
+  'claude-4',     // Claude 4.x
+  'gemini-2',     // Gemini 2.0 Flash Thinking
+  'gemini-3',     // Gemini 3.0
+  'qwq',          // Qwen QwQ
+  'qwen3',        // Qwen3 有思考能力
+  'deepseek-r',   // DeepSeek-R1
+  'deepseek-reasoner', // DeepSeek Reasoner
+  'thinking',     // 通用思考模型关键词
+];
+
+// 支持函数调用的模型关键词
+const FUNCTION_CALLING_MODEL_PATTERNS = [
+  'gpt-4',
+  'gpt-3.5-turbo',
+  'claude-3',
+  'gemini',
+  'qwen',
+  'deepseek',
+  'mistral',
+  'command-r',
+];
+
 // 支持 PDF 的 OpenAI 模型
 const OPENAI_PDF_MODELS = [
   'gpt-4o',
@@ -79,6 +112,45 @@ export function inferVisionSupport(modelId: string): boolean {
 
   // 默认支持（保守策略，用户可手动关闭）
   return true;
+}
+
+/**
+ * 根据模型名称推断是否支持推理/思考功能
+ */
+export function inferReasoningSupport(modelId: string): boolean {
+  const lowerModelId = modelId.toLowerCase();
+
+  for (const pattern of REASONING_MODEL_PATTERNS) {
+    if (lowerModelId.includes(pattern.toLowerCase())) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+/**
+ * 根据模型名称推断是否支持函数调用
+ */
+export function inferFunctionCallingSupport(modelId: string): boolean {
+  const lowerModelId = modelId.toLowerCase();
+
+  // 嵌入模型等不支持函数调用
+  for (const pattern of NON_VISION_MODEL_PATTERNS) {
+    if (lowerModelId.includes(pattern)) {
+      return false;
+    }
+  }
+
+  // 检查是否包含函数调用相关关键词
+  for (const pattern of FUNCTION_CALLING_MODEL_PATTERNS) {
+    if (lowerModelId.includes(pattern.toLowerCase())) {
+      return true;
+    }
+  }
+
+  // 默认不支持
+  return false;
 }
 
 /**
@@ -130,8 +202,8 @@ export function inferPdfSupport(providerType: ProviderType, modelId: string): bo
     return true;
   }
 
-  // OpenAI 和 Azure 根据模型判断
-  if (providerType === 'openai' || providerType === 'azure') {
+  // OpenAI 根据模型判断
+  if (providerType === 'openai') {
     return openaiModelSupportsPdf(modelId);
   }
 
@@ -149,7 +221,9 @@ export function inferPdfSupport(providerType: ProviderType, modelId: string): bo
 export function getModelCapabilities(
   providerType: ProviderType,
   modelId: string,
-  userConfiguredVision?: boolean
+  userConfiguredVision?: boolean,
+  userConfiguredReasoning?: boolean,
+  userConfiguredFunctionCalling?: boolean
 ): ModelCapabilities {
   // 视觉能力：优先使用用户配置，否则智能推断
   const supportsVision = userConfiguredVision ?? inferVisionSupport(modelId);
@@ -157,9 +231,17 @@ export function getModelCapabilities(
   // PDF 能力：根据服务商和模型推断
   const supportsPdf = supportsVision && inferPdfSupport(providerType, modelId);
 
+  // 推理能力：优先使用用户配置，否则智能推断
+  const supportsReasoning = userConfiguredReasoning ?? inferReasoningSupport(modelId);
+
+  // 函数调用能力：优先使用用户配置，否则智能推断
+  const supportsFunctionCalling = userConfiguredFunctionCalling ?? inferFunctionCallingSupport(modelId);
+
   return {
     supportsVision,
     supportsPdf,
+    supportsReasoning,
+    supportsFunctionCalling,
   };
 }
 
