@@ -11,6 +11,7 @@ import { migration as migration001 } from './001_initial';
 import { migration as migration003 } from './003_add_model_vision_support';
 import { migration as migration004 } from './004_add_reasoning_support';
 import { migration as migration005 } from './005_add_evaluation_model_params';
+import { migration as migration006 } from './006_add_attachments_column';
 
 // 注册所有迁移（按版本号排序）
 export const allMigrations: Migration[] = [
@@ -18,6 +19,7 @@ export const allMigrations: Migration[] = [
   migration003,
   migration004,
   migration005,
+  migration006,
 ].sort((a, b) => a.version - b.version);
 
 /**
