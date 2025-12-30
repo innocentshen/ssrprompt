@@ -21,6 +21,7 @@ import { ParameterPanel } from '../components/Prompt/ParameterPanel';
 import { getDatabase, isDatabaseConfigured, getMySQLAdapter, getCurrentProvider } from '../lib/database';
 import { callAIModel, type FileAttachment } from '../lib/ai-service';
 import { getFileUploadCapabilities } from '../lib/model-capabilities';
+import { cacheEvents } from '../lib/cache-events';
 import { DEFAULT_PROMPT_CONFIG } from '../types/database';
 import type {
   Evaluation,
@@ -137,6 +138,32 @@ export function EvaluationPage() {
 
   useEffect(() => {
     loadData();
+  }, []);
+
+  // 监听缓存失效事件，当其他页面更新数据时刷新
+  useEffect(() => {
+    const unsubscribe = cacheEvents.subscribe((type, data) => {
+      if (type === 'prompts') {
+        // 清除列表缓存，下次加载时会重新获取数据
+        listCache = null;
+        // 如果有更新的 prompt 数据，直接更新 prompts 状态
+        if (data && typeof data === 'object' && 'id' in data) {
+          setPrompts((prev) =>
+            prev.map((p) => (p.id === (data as Prompt).id ? (data as Prompt) : p))
+          );
+          // 同时更新 listCache（如果存在）
+          if (listCache) {
+            listCache.prompts = listCache.prompts.map((p) =>
+              p.id === (data as Prompt).id ? (data as Prompt) : p
+            );
+          }
+        }
+      }
+    });
+
+    return () => {
+      unsubscribe();
+    };
   }, []);
 
   const loadEvaluationDetails = useCallback(async (evaluationId: string) => {
@@ -320,6 +347,18 @@ export function EvaluationPage() {
     if (!isDatabaseConfigured()) {
       setListLoading(false);
       return;
+    }
+
+    // 检查是否有 prompts 更新（精确更新缓存，而不是全量刷新）
+    if (cacheEvents.hasPendingUpdates('prompts')) {
+      const updatedPrompts = cacheEvents.consumePendingUpdates('prompts') as Prompt[];
+      if (listCache && updatedPrompts.length > 0) {
+        // 只更新缓存中对应的 prompt，保留其他数据
+        listCache.prompts = listCache.prompts.map((p) => {
+          const updated = updatedPrompts.find((u) => u.id === p.id);
+          return updated || p;
+        });
+      }
     }
 
     // 如果有缓存，先使用缓存

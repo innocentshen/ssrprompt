@@ -43,6 +43,7 @@ import type { Prompt, Model, Provider, PromptVersion, PromptMessage, PromptConfi
 import { DEFAULT_PROMPT_CONFIG } from '../types/database';
 import { useToast } from '../store/useUIStore';
 import { useGlobalStore } from '../store/useGlobalStore';
+import { invalidatePromptsCache } from '../lib/cache-events';
 
 type TabType = 'edit' | 'observe' | 'optimize';
 
@@ -418,6 +419,9 @@ export function PromptsPage() {
       loadVersions(selectedPrompt.id);
       setAutoSaveStatus('saved');
       showToast('success', t('savedVersion', { version: newVersion }));
+
+      // 通知其他页面刷新 prompts 缓存
+      invalidatePromptsCache(updated);
     } catch {
       showToast('error', t('saveFailed'));
     } finally {
