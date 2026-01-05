@@ -4,7 +4,7 @@
 
 一个现代化的 AI Prompt 开发和评测平台，帮助开发者更高效地开发、测试和管理 AI Prompts。
 
-[English](./README_EN.md) | [日本語](./README_JA.md) | 简体中文 | [官网](https://www.ssrprompt.com)
+简体中文 | [官网](https://www.ssrprompt.com)
 
 [![License](https://img.shields.io/badge/license-GPL-blue.svg)](./LICENSE)
 
@@ -369,12 +369,6 @@ const envSchema = z.object({
 
 ## 部署
 
-### Docker 部署
-
-```bash
-docker-compose up -d
-```
-
 ### 环境变量配置
 
 生产环境必须配置：
@@ -385,6 +379,16 @@ DATABASE_URL=postgresql://...
 JWT_SECRET=<强随机字符串，至少32字符>
 ENCRYPTION_KEY=<64位十六进制字符串>
 CORS_ORIGINS=https://your-domain.com
+```
+
+### 构建
+
+```bash
+# 构建前端
+pnpm build
+
+# 构建后端
+pnpm build:server
 ```
 
 ## 开发指南
@@ -416,5 +420,4 @@ GPL
 
 ## 相关链接
 
-- [部署指南](./DEPLOYMENT.md)
 - [开发规范](./CLAUDE.md)

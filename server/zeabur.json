@@ -1,7 +1,0 @@
-{
-  "$schema": "https://json-schema.zeabur.app/1.0.json",
-  "build_type": "node",
-  "build_command": "npm install && npm run build",
-  "start_command": "npm start",
-  "node_version": "18"
-}

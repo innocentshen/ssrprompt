@@ -63,7 +63,9 @@
       "Bash(node:*)",
       "Bash(npx pnpm add:*)",
       "Bash(if [ -d \"F:/ssrprompt/node_modules\" ])",
-      "Bash(npx pnpm:*)"
+      "Bash(npx pnpm:*)",
+      "Bash(del:*)",
+      "Bash(rm:*)"
     ]
   }
 }

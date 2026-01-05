@@ -2,106 +2,225 @@
 
 ## 项目简介
 
-这是一个 Prompt 管理和评测平台，支持 Supabase 和 MySQL 两种数据库。
+SSRPrompt v2.0 是一个 AI Prompt 开发和评测平台，采用前后端分离的 Monorepo 架构。
 
-## 数据库表结构更新规范
+## 技术栈
 
-**重要**: 当编写涉及数据库表结构变更的代码时，必须同时维护迁移系统：
+- **前端**: React 18 + Vite + TypeScript + Tailwind CSS + Zustand
+- **后端**: Express.js + TypeScript + Prisma ORM
+- **数据库**: PostgreSQL
+- **包管理**: pnpm workspace
 
-1. **新增/修改字段时**，需要在以下位置同步更新：
-   - `src/lib/database/migrations/` - 创建新的迁移文件
-   - `server/src/utils/schema.ts` - MySQL 完整 schema
-   - `src/lib/database/supabase-init-sql.ts` - Supabase 完整 schema
-   - `supabase/functions/mysql-proxy/index.ts` - Edge Function MySQL schema
-   - `src/types/database.ts` - TypeScript 类型定义
+## 项目结构
 
-2. **迁移文件命名规范**: `XXX_描述.ts`，如 `002_add_traces_attachments.ts`
+```
+ssrprompt/
+├── packages/
+│   ├── client/          # 前端 React 应用
+│   │   ├── src/
+│   │   │   ├── api/     # API Client
+│   │   │   ├── components/
+│   │   │   ├── pages/
+│   │   │   ├── store/   # Zustand Store
+│   │   │   └── locales/ # 多语言
+│   │   └── package.json
+│   │
+│   ├── server/          # 后端 Express 应用
+│   │   ├── src/
+│   │   │   ├── config/       # 环境配置
+│   │   │   ├── controllers/  # 控制器
+│   │   │   ├── services/     # 业务逻辑
+│   │   │   ├── repositories/ # 数据访问层
+│   │   │   ├── routes/       # 路由
+│   │   │   ├── middleware/   # 中间件
+│   │   │   └── utils/        # 工具函数
+│   │   ├── prisma/
+│   │   │   └── schema.prisma
+│   │   └── package.json
+│   │
+│   └── shared/          # 共享代码
+│       └── src/
+│           ├── types/      # 类型定义
+│           ├── schemas/    # Zod 验证
+│           ├── errors/     # 错误码
+│           └── constants/  # 常量
+│
+├── package.json         # 根配置
+├── pnpm-workspace.yaml
+└── tsconfig.base.json
+```
 
-3. **迁移文件格式**:
+## 开发命令
+
+```bash
+# 安装依赖
+pnpm install
+
+# 开发
+pnpm dev              # 前端
+pnpm dev:server       # 后端
+pnpm dev:all          # 前后端同时启动
+
+# 数据库
+pnpm db:generate      # 生成 Prisma Client
+pnpm db:push          # 推送 Schema
+pnpm db:studio        # 打开 Prisma Studio
+
+# 构建
+pnpm build            # 前端
+pnpm build:server     # 后端
+```
+
+## 数据库表结构变更规范
+
+当需要修改数据库表结构时：
+
+### 1. 修改 Prisma Schema
+
+编辑 `packages/server/prisma/schema.prisma`：
+
+```prisma
+model NewTable {
+  id        String   @id @default(uuid())
+  userId    String   @map("user_id")
+  name      String
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@map("new_table")
+}
+```
+
+### 2. 同步更新类型定义
+
+在 `packages/shared/src/types/` 添加对应类型：
+
 ```typescript
-export const migration = {
-  version: 2,                    // 递增版本号
-  name: 'add_traces_attachments', // 迁移名称
-  description: '描述变更内容',
-  mysql: `ALTER TABLE ...`,      // MySQL 迁移 SQL
-  postgresql: `ALTER TABLE ...`  // PostgreSQL 迁移 SQL
+export interface NewTable {
+  id: string;
+  userId: string;
+  name: string;
+  createdAt: string;
+}
+```
+
+### 3. 添加 Zod 验证
+
+在 `packages/shared/src/schemas/` 添加验证 Schema：
+
+```typescript
+export const CreateNewTableSchema = z.object({
+  name: z.string().min(1),
+});
+```
+
+### 4. 推送变更
+
+```bash
+pnpm db:push          # 开发环境
+pnpm db:migrate       # 生产环境（创建迁移文件）
+```
+
+## 添加新 API 规范
+
+### 完整流程
+
+1. **类型定义** - `packages/shared/src/types/`
+2. **Zod Schema** - `packages/shared/src/schemas/`
+3. **Repository** - `packages/server/src/repositories/`
+4. **Service** - `packages/server/src/services/`
+5. **Controller** - `packages/server/src/controllers/`
+6. **Routes** - `packages/server/src/routes/`
+7. **前端 API** - `packages/client/src/api/`
+
+### 示例：添加 Tags 功能
+
+```typescript
+// 1. packages/shared/src/types/tag.ts
+export interface Tag {
+  id: string;
+  userId: string;
+  name: string;
+}
+
+// 2. packages/shared/src/schemas/tag.ts
+export const CreateTagSchema = z.object({
+  name: z.string().min(1).max(50),
+});
+
+// 3. packages/server/src/repositories/tags.repository.ts
+export class TagsRepository extends TenantRepository<Tag, ...> {
+  // CRUD 方法
+}
+
+// 4. packages/server/src/services/tags.service.ts
+export class TagsService {
+  async findAll(userId: string) { ... }
+}
+
+// 5. packages/server/src/controllers/tags.controller.ts
+export const tagsController = {
+  list: async (req, res) => { ... }
+};
+
+// 6. packages/server/src/routes/tags.routes.ts
+router.get('/', asyncHandler(tagsController.list));
+
+// 7. packages/client/src/api/tags.ts
+export const tagsApi = {
+  list: () => apiClient.get<Tag[]>('/tags'),
 };
 ```
 
-4. **版本号确定规则（重要）**:
-   - 新建迁移文件前，必须先检查 `migrations/index.ts` 中已注册的最高版本号
-   - 新迁移版本号 = 已有最高版本号 + 1
-   - **注意**：用户数据库的 `schema_migrations` 表可能已记录了某些版本号（通过之前的初始化或升级），即使代码中不存在对应的迁移文件。因此不能简单地按文件数量推断版本号
-   - 如果版本号与用户数据库中已有记录冲突，升级提示将不会出现
+## 安全规范
 
-5. **MySQL 迁移 SQL 注意事项**:
-   - MySQL 不支持 `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` 语法
-   - 需要使用条件检查来实现幂等性：
-   ```sql
-   SET @column_exists = (
-     SELECT COUNT(*) FROM information_schema.COLUMNS
-     WHERE TABLE_SCHEMA = DATABASE()
-     AND TABLE_NAME = 'table_name'
-     AND COLUMN_NAME = 'column_name'
-   );
-   SET @sql = IF(@column_exists = 0,
-     'ALTER TABLE table_name ADD COLUMN column_name TYPE DEFAULT value',
-     'SELECT 1'
-   );
-   PREPARE stmt FROM @sql;
-   EXECUTE stmt;
-   DEALLOCATE PREPARE stmt;
-   ```
+### API Key 加密
 
-6. **检查清单**:
-   - [ ] 创建迁移文件
-   - [ ] 更新 MySQL schema (server/src/utils/schema.ts)
-   - [ ] 更新 Supabase schema (src/lib/database/supabase-init-sql.ts)
-   - [ ] 更新 Edge Function schema (supabase/functions/mysql-proxy/index.ts)
-   - [ ] 更新 TypeScript 类型 (src/types/database.ts)
-   - [ ] 在 migrations/index.ts 中注册迁移
+所有 API Key 必须使用 AES-256-GCM 加密存储：
 
-## 工作流规范
+```typescript
+import { encrypt, decrypt } from '../utils/crypto.js';
 
-1. **代码变更前确认分支**：在进行任何代码变更前，必须先提示用户当前所在的分支名称，确保用户知悉变更将应用到哪个分支
+// 存储时加密
+const encryptedKey = encrypt(apiKey);
+
+// 使用时解密
+const apiKey = decrypt(encryptedKey);
+```
+
+### 多租户隔离
+
+所有数据访问必须通过 `TenantRepository` 或显式包含 `userId` 过滤：
+
+```typescript
+// ✅ 正确 - 使用 TenantRepository
+class MyRepository extends TenantRepository<...> { }
+
+// ✅ 正确 - 显式过滤
+prisma.myTable.findMany({ where: { userId } });
+
+// ❌ 错误 - 缺少用户过滤
+prisma.myTable.findMany();
+```
+
+### JWT 认证
+
+受保护的路由必须使用 `authenticateJWT` 中间件：
+
+```typescript
+router.use('/protected', authenticateJWT, protectedRoutes);
+```
 
 ## 代码风格
 
-- 使用 TypeScript
+- 使用 TypeScript 严格模式
 - 组件使用函数式组件 + Hooks
 - 样式使用 Tailwind CSS
+- 避免 `any` 类型，使用 Zod 进行运行时验证
+- 数据库查询明确指定字段，禁止 `SELECT *`
 
-## 数据库查询规范
+## 工作流规范
 
-**性能优化原则**：
-
-1. **禁止使用 SELECT ***：查询时必须明确指定需要的字段，避免传输不必要的数据
-   ```typescript
-   // ❌ 错误
-   db.from('prompts').select('*')
-
-   // ✅ 正确
-   db.from('prompts').select('id, name, content, variables')
-   ```
-
-2. **批量查询优先**：当需要查询多个表时，使用批量查询接口减少网络请求
-   ```typescript
-   // ❌ 错误：多次独立请求
-   const [a, b, c] = await Promise.all([
-     db.from('table1').select('*'),
-     db.from('table2').select('*'),
-     db.from('table3').select('*'),
-   ]);
-
-   // ✅ 正确：使用批量查询（MySQL）
-   const { data } = await mysqlAdapter.batchQuery([
-     { key: 'a', table: 'table1', columns: 'id, name' },
-     { key: 'b', table: 'table2', columns: 'id, value' },
-   ]);
-   ```
-
-3. **按需加载字段**：根据实际使用场景选择字段
-   - 列表页面：只查询展示需要的字段
-   - 详情页面：查询完整字段
-   - 大文本字段（如 content, model_output）：仅在需要时查询
-
+1. **代码变更前确认分支**：确保在正确的分支上工作
+2. **先读后改**：修改文件前必须先读取
+3. **小步提交**：每个功能点单独提交
+4. **类型优先**：先定义类型，再实现逻辑
