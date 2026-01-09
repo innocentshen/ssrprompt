@@ -3,6 +3,9 @@
  * Used for consistent error handling across frontend and backend
  */
 export const ErrorCodes = {
+  // Throttling
+  RATE_LIMIT_EXCEEDED: 'RATE_LIMIT_EXCEEDED',
+
   // Auth errors
   TOKEN_EXPIRED: 'TOKEN_EXPIRED',
   TOKEN_INVALID: 'TOKEN_INVALID',
@@ -18,6 +21,8 @@ export const ErrorCodes = {
   QUOTA_EXCEEDED: 'QUOTA_EXCEEDED',
   MODEL_NOT_AVAILABLE: 'MODEL_NOT_AVAILABLE',
   STREAM_ABORTED: 'STREAM_ABORTED',
+  CONTEXT_LIMIT_EXCEEDED: 'CONTEXT_LIMIT_EXCEEDED',
+  FILE_UPLOAD_NOT_ALLOWED: 'FILE_UPLOAD_NOT_ALLOWED',
 
   // Validation errors
   VALIDATION_ERROR: 'VALIDATION_ERROR',

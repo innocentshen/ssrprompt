@@ -1,120 +1,80 @@
 import { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Bot, Database, Sparkles, Lock, AlertCircle } from 'lucide-react';
-// import { FlaskConical } from 'lucide-react'; // 能力测试图标暂时注释
+import { Bot, Sparkles, Users, FileText } from 'lucide-react';
 import { ProviderList } from '../components/Settings/ProviderList';
 import { ProviderForm } from '../components/Settings/ProviderForm';
 import { AddProviderModal } from '../components/Settings/AddProviderModal';
-import { DatabaseSettings } from '../components/Settings/DatabaseSettings';
 import { OptimizationSettings } from '../components/Settings/OptimizationSettings';
-// import { ModelCapabilityTest } from '../components/Settings/ModelCapabilityTest';
-import { useToast, Button, Input } from '../components/ui';
-import { getDatabase, isDatabaseConfigured } from '../lib/database';
-import { isDemoMode, verifyDemoSettingsPassword } from '../lib/tenant';
+import { OcrSettings } from '../components/Settings/OcrSettings';
+import { UserManagement } from '../components/Settings/UserManagement';
+import { useToast } from '../components/ui';
+import { providersApi, modelsApi } from '../api';
+import { useGlobalStore } from '../store/useGlobalStore';
+import { useAuthStore } from '../store/useAuthStore';
 import type { Provider, Model, ProviderType } from '../types';
 
-type SettingsTab = 'providers' | 'database' | 'optimization' | 'capability-test';
-
-const DEMO_SETTINGS_UNLOCKED_KEY = 'demo_settings_unlocked';
+type SettingsTab = 'providers' | 'optimization' | 'ocr' | 'users';
 
 export function SettingsPage() {
   const { t } = useTranslation('settings');
-  const { t: tLogin } = useTranslation('login');
   const { showToast } = useToast();
+  const { fetchProvidersAndModels: refreshGlobalStore } = useGlobalStore();
+  const { user } = useAuthStore();
+  const isAdmin = user?.roles?.includes('admin') ?? false;
   const [activeTab, setActiveTab] = useState<SettingsTab>('providers');
   const [providers, setProviders] = useState<Provider[]>([]);
   const [models, setModels] = useState<Model[]>([]);
   const [selectedProviderId, setSelectedProviderId] = useState<string | null>(null);
   const [showAddModal, setShowAddModal] = useState(false);
-  const [loading, setLoading] = useState(false);
-
-  // Demo 模式密码验证状态
-  const [isUnlocked, setIsUnlocked] = useState(() => {
-    // 检查本次会话是否已解锁
-    if (!isDemoMode()) return true;
-    return sessionStorage.getItem(DEMO_SETTINGS_UNLOCKED_KEY) === 'true';
-  });
-  const [authPassword, setAuthPassword] = useState('');
-  const [authError, setAuthError] = useState('');
-
-  const handleAuthSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (verifyDemoSettingsPassword(authPassword)) {
-      sessionStorage.setItem(DEMO_SETTINGS_UNLOCKED_KEY, 'true');
-      setIsUnlocked(true);
-      setAuthError('');
-    } else {
-      setAuthError(tLogin('demoSettingsPasswordWrong'));
-      setAuthPassword('');
-    }
-  };
+  const [, setLoading] = useState(false);
 
   const selectedProvider = providers.find((p) => p.id === selectedProviderId) || null;
-  const selectedModels = models.filter((m) => m.provider_id === selectedProviderId);
+  const selectedModels = models.filter((m) => m.providerId === selectedProviderId);
 
   useEffect(() => {
     loadProviders();
   }, []);
 
   const loadProviders = async () => {
-    if (!isDatabaseConfigured()) {
-      setLoading(false);
-      return;
-    }
-
     setLoading(true);
     try {
-      const { data: providersData, error: providersError } = await getDatabase()
-        .from('providers')
-        .select('*')
-        .order('created_at', { ascending: true });
+      // 并行加载 providers 和 models
+      const [providersData, modelsData] = await Promise.all([
+        providersApi.list(),
+        modelsApi.list(),
+      ]);
 
-      const { data: modelsData } = await getDatabase()
-        .from('models')
-        .select('*')
-        .order('created_at', { ascending: true });
+      setProviders(providersData);
+      setModels(modelsData);
 
-      if (providersError) {
-        showToast('error', t('configureDbFirst'));
-      } else if (providersData) {
-        setProviders(providersData);
-        if (providersData.length > 0 && !selectedProviderId) {
-          setSelectedProviderId(providersData[0].id);
-        }
+      if (providersData.length > 0 && !selectedProviderId) {
+        setSelectedProviderId(providersData[0].id);
       }
-      if (modelsData) {
-        setModels(modelsData);
-      }
-    } catch {
-      showToast('error', t('configureDbFirst'));
+    } catch (err) {
+      console.error('Failed to load providers:', err);
+      showToast('error', t('loadFailed'));
     }
     setLoading(false);
   };
 
-  const handleAddProvider = async (name: string, type: ProviderType) => {
+  const handleAddProvider = async (name: string, type: ProviderType, isSystem?: boolean) => {
     try {
-      const { data, error } = await getDatabase()
-        .from('providers')
-        .insert({
-          name,
-          type,
-          api_key: '',
-          enabled: true,
-        })
-        .select()
-        .single();
+      const newProvider = await providersApi.create({
+        name,
+        type,
+        apiKey: '',
+        enabled: true,
+        ...(isSystem !== undefined && { isSystem }),
+      });
 
-      if (error) {
-        showToast('error', t('addFailed') + ': ' + error.message);
-        return;
-      }
-
-      if (data) {
-        setProviders((prev) => [...prev, data]);
-        setSelectedProviderId(data.id);
-        showToast('success', t('providerAddedSuccess'));
-      }
-    } catch {
+      setProviders((prev) => [...prev, newProvider]);
+      setSelectedProviderId(newProvider.id);
+      showToast('success', t('providerAddedSuccess'));
+      setShowAddModal(false);
+      // Sync to global store for other pages
+      refreshGlobalStore(true);
+    } catch (err) {
+      console.error('Failed to add provider:', err);
       showToast('error', t('addProviderFailed'));
     }
   };
@@ -122,24 +82,22 @@ export function SettingsPage() {
   const handleSaveProvider = async (data: Partial<Provider>) => {
     if (!selectedProviderId) return;
     try {
-      const { error } = await getDatabase()
-        .from('providers')
-        .update({
-          ...data,
-          updated_at: new Date().toISOString(),
-        })
-        .eq('id', selectedProviderId);
-
-      if (error) {
-        showToast('error', t('saveFailed') + ': ' + error.message);
-        return;
-      }
+      const updated = await providersApi.update(selectedProviderId, {
+        name: data.name,
+        type: data.type,
+        apiKey: data.apiKey,
+        baseUrl: data.baseUrl,
+        enabled: data.enabled,
+      });
 
       setProviders((prev) =>
-        prev.map((p) => (p.id === selectedProviderId ? { ...p, ...data } : p))
+        prev.map((p) => (p.id === selectedProviderId ? updated : p))
       );
       showToast('success', t('configSaved'));
-    } catch {
+      // Sync to global store for other pages
+      refreshGlobalStore(true);
+    } catch (err) {
+      console.error('Failed to save provider:', err);
       showToast('error', t('saveConfigFailed'));
     }
   };
@@ -147,116 +105,67 @@ export function SettingsPage() {
   const handleDeleteProvider = async () => {
     if (!selectedProviderId) return;
     try {
-      const db = getDatabase();
-
-      // 获取该服务商下的所有模型 ID
-      const providerModelIds = models
-        .filter((m) => m.provider_id === selectedProviderId)
-        .map((m) => m.id);
-
-      if (providerModelIds.length > 0) {
-        // 先清除 evaluations 表中对这些模型的引用（设为 NULL）
-        // 清除 model_id 引用
-        await db
-          .from('evaluations')
-          .update({ model_id: null })
-          .in('model_id', providerModelIds);
-
-        // 清除 judge_model_id 引用
-        await db
-          .from('evaluations')
-          .update({ judge_model_id: null })
-          .in('judge_model_id', providerModelIds);
-
-        // 删除该服务商下的所有模型
-        await db
-          .from('models')
-          .delete()
-          .eq('provider_id', selectedProviderId);
-      }
-
-      // 删除服务商
-      const { error } = await db
-        .from('providers')
-        .delete()
-        .eq('id', selectedProviderId);
-
-      if (error) {
-        showToast('error', t('deleteFailed') + ': ' + error.message);
-        return;
-      }
+      await providersApi.delete(selectedProviderId);
 
       const remaining = providers.filter((p) => p.id !== selectedProviderId);
       setProviders(remaining);
-      setModels((prev) => prev.filter((m) => m.provider_id !== selectedProviderId));
+      setModels((prev) => prev.filter((m) => m.providerId !== selectedProviderId));
       setSelectedProviderId(remaining[0]?.id || null);
       showToast('success', t('providerDeletedSuccess'));
-    } catch {
+      // Sync to global store for other pages
+      refreshGlobalStore(true);
+    } catch (err) {
+      console.error('Failed to delete provider:', err);
       showToast('error', t('deleteProviderFailed'));
     }
   };
 
-  const handleAddModel = async (modelId: string, name: string, supportsVision: boolean = true) => {
+  const handleAddModel = async (
+    modelId: string,
+    name: string,
+    options?: { supportsVision?: boolean; maxContextLength?: number }
+  ) => {
     if (!selectedProviderId) return;
     try {
-      const { data, error } = await getDatabase()
-        .from('models')
-        .insert({
-          provider_id: selectedProviderId,
-          model_id: modelId,
-          name,
-          capabilities: ['chat'],
-          supports_vision: supportsVision,
-        })
-        .select()
-        .single();
+      const newModel = await modelsApi.create(selectedProviderId, {
+        modelId,
+        name,
+        capabilities: ['chat'],
+        supportsVision: options?.supportsVision,
+        maxContextLength: options?.maxContextLength,
+      });
 
-      if (error) {
-        showToast('error', t('addModelFailed') + ': ' + error.message);
-        return;
-      }
-
-      if (data) {
-        setModels((prev) => [...prev, data]);
-        showToast('success', t('modelAddedSuccess'));
-      }
-    } catch {
+      setModels((prev) => [...prev, newModel]);
+      showToast('success', t('modelAddedSuccess'));
+      // Sync to global store for other pages
+      refreshGlobalStore(true);
+    } catch (err) {
+      console.error('Failed to add model:', err);
       showToast('error', t('addModelFailed'));
     }
   };
 
   const handleToggleVision = async (modelId: string, supportsVision: boolean) => {
     try {
-      const { error } = await getDatabase()
-        .from('models')
-        .update({ supports_vision: supportsVision })
-        .eq('id', modelId);
-
-      if (error) {
-        showToast('error', t('updateFailed') + ': ' + error.message);
-        return;
-      }
-
+      const updated = await modelsApi.update(modelId, { supportsVision });
       setModels((prev) =>
-        prev.map((m) => (m.id === modelId ? { ...m, supports_vision: supportsVision } : m))
+        prev.map((m) => (m.id === modelId ? updated : m))
       );
-    } catch {
+    } catch (err) {
+      console.error('Failed to update model:', err);
       showToast('error', t('updateModelFailed'));
     }
   };
 
   const handleRemoveModel = async (modelId: string) => {
     try {
-      const { error } = await getDatabase().from('models').delete().eq('id', modelId);
-
-      if (error) {
-        showToast('error', t('deleteModelFailed'));
-        return;
-      }
-
+      await modelsApi.delete(modelId);
       setModels((prev) => prev.filter((m) => m.id !== modelId));
       showToast('success', t('modelDeletedSuccess'));
-    } catch {
+      // Sync to global store for other pages
+      refreshGlobalStore(true);
+    } catch (err) {
+      console.error('Failed to delete model:', err);
       showToast('error', t('deleteModelFailed'));
     }
   };
@@ -267,70 +176,26 @@ export function SettingsPage() {
       return false;
     }
 
-    await new Promise((resolve) => setTimeout(resolve, 1000));
+    try {
+      const result = await providersApi.testConnection({
+        type,
+        apiKey,
+        baseUrl: baseUrl || null,
+      });
 
-    if (apiKey.length > 10) {
-      showToast('success', t('connectionTestSuccess'));
-      return true;
-    } else {
-      showToast('error', t('apiKeyFormatError'));
+      if (result.success) {
+        showToast('success', t('connectionTestSuccess'));
+        return true;
+      } else {
+        showToast('error', result.message || t('connectionTestFailed'));
+        return false;
+      }
+    } catch (err) {
+      console.error('Connection test failed:', err);
+      showToast('error', t('connectionTestFailed'));
       return false;
     }
   };
-
-  // Demo 模式密码验证界面
-  if (isDemoMode() && !isUnlocked) {
-    return (
-      <div className="h-full flex items-center justify-center bg-slate-950 light:bg-slate-50">
-        <div className="w-full max-w-md p-8">
-          <div className="text-center mb-8">
-            <div className="inline-flex items-center justify-center w-16 h-16 bg-amber-500/10 rounded-2xl mb-4">
-              <Lock className="w-8 h-8 text-amber-400" />
-            </div>
-            <h2 className="text-2xl font-bold text-white light:text-slate-900 mb-2">
-              {tLogin('demoSettingsAuth')}
-            </h2>
-            <p className="text-slate-400 light:text-slate-600">
-              {tLogin('demoSettingsAuthDesc')}
-            </p>
-          </div>
-
-          <div className="bg-slate-800/50 light:bg-white/80 backdrop-blur-sm border border-slate-700 light:border-slate-200 rounded-xl p-6">
-            <form onSubmit={handleAuthSubmit} className="space-y-4">
-              <div>
-                <label className="block text-sm font-medium text-slate-300 light:text-slate-700 mb-2">
-                  {tLogin('demoSettingsPassword')}
-                </label>
-                <Input
-                  type="password"
-                  value={authPassword}
-                  onChange={(e) => setAuthPassword(e.target.value)}
-                  placeholder={tLogin('demoSettingsPasswordPlaceholder')}
-                  className="w-full"
-                  autoFocus
-                />
-              </div>
-
-              {authError && (
-                <div className="flex items-center gap-2 p-3 bg-rose-950/30 light:bg-rose-50 border border-rose-900/50 light:border-rose-200 rounded-lg">
-                  <AlertCircle className="w-4 h-4 text-rose-400 light:text-rose-500 flex-shrink-0" />
-                  <p className="text-sm text-rose-300 light:text-rose-600">{authError}</p>
-                </div>
-              )}
-
-              <Button
-                type="submit"
-                className="w-full"
-                disabled={!authPassword}
-              >
-                {tLogin('demoSettingsEnter')}
-              </Button>
-            </form>
-          </div>
-        </div>
-      </div>
-    );
-  }
 
   return (
     <div className="h-full flex flex-col overflow-hidden bg-slate-950 light:bg-slate-50">
@@ -347,17 +212,6 @@ export function SettingsPage() {
           {t('providers')}
         </button>
         <button
-          onClick={() => setActiveTab('database')}
-          className={`flex items-center gap-2 px-4 py-3 text-sm font-medium border-b-2 transition-colors ${
-            activeTab === 'database'
-              ? 'border-cyan-500 text-cyan-400 light:text-cyan-600'
-              : 'border-transparent text-slate-500 light:text-slate-600 hover:text-slate-300 light:hover:text-slate-800'
-          }`}
-        >
-          <Database className="w-4 h-4" />
-          {t('database')}
-        </button>
-        <button
           onClick={() => setActiveTab('optimization')}
           className={`flex items-center gap-2 px-4 py-3 text-sm font-medium border-b-2 transition-colors ${
             activeTab === 'optimization'
@@ -368,19 +222,30 @@ export function SettingsPage() {
           <Sparkles className="w-4 h-4" />
           {t('optimization')}
         </button>
-        {/* 能力测试入口暂时注释
         <button
-          onClick={() => setActiveTab('capability-test')}
+          onClick={() => setActiveTab('ocr')}
           className={`flex items-center gap-2 px-4 py-3 text-sm font-medium border-b-2 transition-colors ${
-            activeTab === 'capability-test'
+            activeTab === 'ocr'
               ? 'border-cyan-500 text-cyan-400 light:text-cyan-600'
               : 'border-transparent text-slate-500 light:text-slate-600 hover:text-slate-300 light:hover:text-slate-800'
           }`}
         >
-          <FlaskConical className="w-4 h-4" />
-          {t('capabilityTest')}
+          <FileText className="w-4 h-4" />
+          {t('fileOcr')}
         </button>
-        */}
+        {isAdmin && (
+          <button
+            onClick={() => setActiveTab('users')}
+            className={`flex items-center gap-2 px-4 py-3 text-sm font-medium border-b-2 transition-colors ${
+              activeTab === 'users'
+                ? 'border-cyan-500 text-cyan-400 light:text-cyan-600'
+                : 'border-transparent text-slate-500 light:text-slate-600 hover:text-slate-300 light:hover:text-slate-800'
+            }`}
+          >
+            <Users className="w-4 h-4" />
+            {t('userManagement')}
+          </button>
+        )}
       </div>
 
       {activeTab === 'providers' ? (
@@ -405,13 +270,8 @@ export function SettingsPage() {
             isOpen={showAddModal}
             onClose={() => setShowAddModal(false)}
             onAdd={handleAddProvider}
+            isAdmin={isAdmin}
           />
-        </div>
-      ) : activeTab === 'database' ? (
-        <div className="flex-1 overflow-y-auto p-6">
-          <div className="max-w-2xl">
-            <DatabaseSettings />
-          </div>
         </div>
       ) : activeTab === 'optimization' ? (
         <div className="flex-1 overflow-y-auto p-6">
@@ -419,16 +279,19 @@ export function SettingsPage() {
             <OptimizationSettings />
           </div>
         </div>
-      ) : null}
-      {/* 能力测试内容暂时注释
-      {activeTab === 'capability-test' ? (
+      ) : activeTab === 'ocr' ? (
+        <div className="flex-1 overflow-y-auto p-6">
+          <div className="max-w-3xl">
+            <OcrSettings />
+          </div>
+        </div>
+      ) : activeTab === 'users' ? (
         <div className="flex-1 overflow-y-auto p-6">
           <div className="max-w-4xl">
-            <ModelCapabilityTest models={models} providers={providers} />
+            <UserManagement />
           </div>
         </div>
       ) : null}
-      */}
     </div>
   );
 }

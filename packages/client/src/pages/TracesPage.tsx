@@ -21,11 +21,13 @@ import {
   Loader2,
 } from 'lucide-react';
 import { Button, Badge, Select, Modal, Input, useToast, MarkdownRenderer } from '../components/ui';
-import { getDatabase, isDatabaseConfigured } from '../lib/database';
-import type { Trace, Prompt, Model } from '../types';
+import { tracesApi, promptsApi, modelsApi } from '../api';
+import type { Trace, TraceListItem, PromptListItem, Model } from '../types';
 import type { FileAttachment } from '../lib/ai-service';
 import { AttachmentList } from '../components/Prompt/AttachmentPreview';
 import { AttachmentModal } from '../components/Prompt/AttachmentModal';
+
+// API returns camelCase, use directly
 
 interface PromptStats {
   promptId: string | null;
@@ -40,8 +42,8 @@ export function TracesPage() {
   const { showToast } = useToast();
   const { t } = useTranslation('traces');
   const { t: tCommon } = useTranslation('common');
-  const [traces, setTraces] = useState<Trace[]>([]);
-  const [prompts, setPrompts] = useState<Prompt[]>([]);
+  const [traces, setTraces] = useState<TraceListItem[]>([]);
+  const [prompts, setPrompts] = useState<PromptListItem[]>([]);
   const [models, setModels] = useState<Model[]>([]);
   const [selectedTrace, setSelectedTrace] = useState<Trace | null>(null);
   const [selectedPromptId, setSelectedPromptId] = useState<string | null>(null);
@@ -56,36 +58,37 @@ export function TracesPage() {
   const [previewAttachment, setPreviewAttachment] = useState<FileAttachment | null>(null);
   const [attachmentsLoading, setAttachmentsLoading] = useState(false);
 
+  // Safe date formatting helper
+  const formatDate = (dateString: string | undefined | null) => {
+    if (!dateString) return '-';
+    try {
+      const date = new Date(dateString);
+      if (isNaN(date.getTime())) return '-';
+      return date.toLocaleString('zh-CN');
+    } catch {
+      return '-';
+    }
+  };
+
   useEffect(() => {
     loadData();
   }, []);
 
   const loadData = async () => {
-    // 检查数据库是否已配置
-    if (!isDatabaseConfigured()) {
-      setLoading(false);
-      return;
-    }
-
     setLoading(true);
     try {
-      // 查询列表时不加载 attachments 字段，避免内存问题
       const [tracesRes, promptsRes, modelsRes] = await Promise.all([
-        getDatabase().from('traces').select('id,user_id,prompt_id,model_id,input,output,tokens_input,tokens_output,latency_ms,status,error_message,metadata,created_at').order('created_at', { ascending: false }).limit(500),
-        getDatabase().from('prompts').select('*'),
-        getDatabase().from('models').select('*'),
+        tracesApi.list({ limit: 100 }),
+        promptsApi.list(),
+        modelsApi.list(),
       ]);
 
-      if (tracesRes.error) {
-        console.error('Failed to load traces:', tracesRes.error);
-        showToast('error', t('loadFailed') + ': ' + tracesRes.error.message);
-      }
-      if (tracesRes.data) setTraces(tracesRes.data);
-      if (promptsRes.data) setPrompts(promptsRes.data);
-      if (modelsRes.data) setModels(modelsRes.data);
+      setTraces(tracesRes.data);
+      setPrompts(promptsRes);
+      setModels(modelsRes);
     } catch (e) {
       console.error('Failed to load data:', e);
-      showToast('error', t('configureDbFirst'));
+      showToast('error', t('loadFailed'));
     }
     setLoading(false);
   };
@@ -95,16 +98,7 @@ export function TracesPage() {
 
     setDeleting(true);
     try {
-      // Delete traces for selected prompt (or unlinked traces if promptId is null)
-      const query = getDatabase().from('traces').delete();
-
-      if (selectedPromptId === null) {
-        // Delete traces with null prompt_id
-        await query.is('prompt_id', null);
-      } else {
-        await query.eq('prompt_id', selectedPromptId);
-      }
-
+      await tracesApi.deleteByPrompt(selectedPromptId === '__all__' ? null : selectedPromptId);
       showToast('success', t('historyDeleted'));
       setShowDeleteConfirm(false);
       setSelectedPromptId(null);
@@ -118,11 +112,7 @@ export function TracesPage() {
   const handleDeleteSingleTrace = async (traceId: string, e: React.MouseEvent) => {
     e.stopPropagation();
     try {
-      const { error } = await getDatabase().from('traces').delete().eq('id', traceId);
-      if (error) {
-        showToast('error', t('deleteFailed'));
-        return;
-      }
+      await tracesApi.delete(traceId);
       setTraces((prev) => prev.filter((t) => t.id !== traceId));
       if (selectedTrace?.id === traceId) {
         setSelectedTrace(null);
@@ -151,42 +141,37 @@ export function TracesPage() {
     setExpandedField(field);
   };
 
-  // 检查 trace 是否有附件（通过 metadata.files 判断）
+  // 检查 trace 是否有附件
   const hasAttachments = (trace: Trace): boolean => {
+    // Check both attachments array and metadata.files
+    if (trace.attachments && trace.attachments.length > 0) {
+      return true;
+    }
     const metadata = trace.metadata as { files?: { name: string; type: string }[] } | null;
     return !!(metadata?.files && metadata.files.length > 0);
   };
 
   // 获取附件数量
   const getAttachmentCount = (trace: Trace): number => {
+    if (trace.attachments && trace.attachments.length > 0) {
+      return trace.attachments.length;
+    }
     const metadata = trace.metadata as { files?: { name: string; type: string }[] } | null;
     return metadata?.files?.length || 0;
   };
 
-  // 点击查看详情时加载完整数据（包括 attachments）
-  const handleSelectTrace = async (trace: Trace) => {
-    // 先显示基本信息
-    setSelectedTrace(trace);
-    setAttachmentsLoading(false);
-
-    // 检查是否有附件，如果有则异步加载
-    if (hasAttachments(trace)) {
-      setAttachmentsLoading(true);
-      try {
-        const { data } = await getDatabase()
-          .from('traces')
-          .select('attachments')
-          .eq('id', trace.id)
-          .single();
-
-        if (data?.attachments) {
-          setSelectedTrace(prev => prev ? { ...prev, attachments: data.attachments } : null);
-        }
-      } catch (e) {
-        console.error('Failed to load attachments:', e);
-      } finally {
-        setAttachmentsLoading(false);
-      }
+  // 点击查看详情时加载完整数据（包括 input, output, attachments）
+  const handleSelectTrace = async (traceItem: TraceListItem) => {
+    setSelectedTrace(null);
+    setAttachmentsLoading(true);
+    try {
+      const fullTrace = await tracesApi.getById(traceItem.id);
+      setSelectedTrace(fullTrace);
+    } catch (e) {
+      console.error('Failed to load trace details:', e);
+      showToast('error', t('loadFailed'));
+    } finally {
+      setAttachmentsLoading(false);
     }
   };
 
@@ -199,16 +184,16 @@ export function TracesPage() {
       promptId: '__all__',
       promptName: t('all'),
       count: traces.length,
-      totalTokens: traces.reduce((acc, t) => acc + t.tokens_input + t.tokens_output, 0),
+      totalTokens: traces.reduce((acc, t) => acc + t.tokensInput + t.tokensOutput, 0),
       avgLatency: traces.length
-        ? Math.round(traces.reduce((acc, t) => acc + t.latency_ms, 0) / traces.length)
+        ? Math.round(traces.reduce((acc, t) => acc + t.latencyMs, 0) / traces.length)
         : 0,
       errorCount: traces.filter((t) => t.status === 'error').length,
     });
 
     // Group by prompt
     for (const trace of traces) {
-      const key = trace.prompt_id;
+      const key = trace.promptId;
       if (!statsMap.has(key)) {
         statsMap.set(key, {
           promptId: key,
@@ -221,16 +206,16 @@ export function TracesPage() {
       }
       const stats = statsMap.get(key)!;
       stats.count++;
-      stats.totalTokens += trace.tokens_input + trace.tokens_output;
+      stats.totalTokens += trace.tokensInput + trace.tokensOutput;
       if (trace.status === 'error') stats.errorCount++;
     }
 
     // Calculate average latency for each prompt
     for (const [key, stats] of statsMap.entries()) {
       if (key === '__all__') continue;
-      const promptTraces = traces.filter((t) => t.prompt_id === key);
+      const promptTraces = traces.filter((t) => t.promptId === key);
       stats.avgLatency = promptTraces.length
-        ? Math.round(promptTraces.reduce((acc, t) => acc + t.latency_ms, 0) / promptTraces.length)
+        ? Math.round(promptTraces.reduce((acc, t) => acc + t.latencyMs, 0) / promptTraces.length)
         : 0;
     }
 
@@ -259,7 +244,7 @@ export function TracesPage() {
 
     // Filter by prompt
     if (selectedPromptId && selectedPromptId !== '__all__') {
-      result = result.filter((t) => t.prompt_id === selectedPromptId);
+      result = result.filter((t) => t.promptId === selectedPromptId);
     }
 
     // Filter by status
@@ -332,7 +317,7 @@ export function TracesPage() {
                     {stats.promptName}
                   </span>
                 </div>
-                <Badge variant="secondary" className="flex-shrink-0 ml-2">
+                <Badge variant="info">
                   {stats.count}
                 </Badge>
               </div>
@@ -456,18 +441,18 @@ export function TracesPage() {
                       )}
                     </td>
                     <td className="px-6 py-4 text-sm text-slate-400 light:text-slate-600">
-                      {new Date(trace.created_at).toLocaleString('zh-CN')}
+                      {formatDate(trace.createdAt)}
                     </td>
                     <td className="px-6 py-4 text-sm text-slate-300 light:text-slate-800">
-                      {getModelName(trace.model_id)}
+                      {getModelName(trace.modelId)}
                     </td>
                     <td className="px-6 py-4 text-sm text-slate-400">
-                      <span className="text-cyan-400 light:text-cyan-600">{trace.tokens_input}</span>
+                      <span className="text-cyan-400 light:text-cyan-600">{trace.tokensInput}</span>
                       <span className="mx-1 light:text-slate-400">/</span>
-                      <span className="text-teal-400 light:text-teal-600">{trace.tokens_output}</span>
+                      <span className="text-teal-400 light:text-teal-600">{trace.tokensOutput}</span>
                     </td>
                     <td className="px-6 py-4 text-sm text-slate-400 light:text-slate-600">
-                      {trace.latency_ms}ms
+                      {trace.latencyMs}ms
                     </td>
                     <td className="px-6 py-4">
                       <div className="flex items-center gap-2">
@@ -515,22 +500,22 @@ export function TracesPage() {
               </div>
               <div className="p-3 bg-slate-800/50 light:bg-slate-100 border border-slate-700 light:border-slate-200 rounded-lg">
                 <p className="text-xs text-slate-500 light:text-slate-600 mb-1">{t("latency")}</p>
-                <p className="text-sm font-medium text-slate-200 light:text-slate-800">{selectedTrace.latency_ms}ms</p>
+                <p className="text-sm font-medium text-slate-200 light:text-slate-800">{selectedTrace.latencyMs}ms</p>
               </div>
               <div className="p-3 bg-slate-800/50 light:bg-slate-100 border border-slate-700 light:border-slate-200 rounded-lg">
                 <p className="text-xs text-slate-500 light:text-slate-600 mb-1">{t("input")} Tokens</p>
-                <p className="text-sm font-medium text-cyan-400 light:text-cyan-600">{selectedTrace.tokens_input}</p>
+                <p className="text-sm font-medium text-cyan-400 light:text-cyan-600">{selectedTrace.tokensInput}</p>
               </div>
               <div className="p-3 bg-slate-800/50 light:bg-slate-100 border border-slate-700 light:border-slate-200 rounded-lg">
                 <p className="text-xs text-slate-500 light:text-slate-600 mb-1">{t("output")} Tokens</p>
-                <p className="text-sm font-medium text-teal-400 light:text-teal-600">{selectedTrace.tokens_output}</p>
+                <p className="text-sm font-medium text-teal-400 light:text-teal-600">{selectedTrace.tokensOutput}</p>
               </div>
             </div>
 
             <div>
               <h4 className="text-sm font-medium text-slate-300 light:text-slate-700 mb-2">Prompt</h4>
               <p className="text-sm text-slate-400 light:text-slate-600">
-                {getPromptName(selectedTrace.prompt_id)}
+                {getPromptName(selectedTrace.promptId)}
               </p>
             </div>
 
@@ -626,12 +611,12 @@ export function TracesPage() {
               </div>
             )}
 
-            {selectedTrace.error_message && (
+            {selectedTrace.errorMessage && (
               <div>
                 <h4 className="text-sm font-medium text-rose-400 light:text-rose-600 mb-2">{tCommon("error")}</h4>
                 <div className="p-4 bg-rose-500/10 light:bg-rose-50 border border-rose-500/30 light:border-rose-200 rounded-lg">
                   <pre className="text-sm text-rose-300 light:text-rose-700 whitespace-pre-wrap font-mono">
-                    {selectedTrace.error_message}
+                    {selectedTrace.errorMessage}
                   </pre>
                 </div>
               </div>
@@ -639,7 +624,7 @@ export function TracesPage() {
 
             <div className="pt-4 border-t border-slate-700 light:border-slate-200">
               <p className="text-xs text-slate-500 light:text-slate-600">
-                {t('createdAt')}: {new Date(selectedTrace.created_at).toLocaleString()}
+                {t('createdAt')}: {formatDate(selectedTrace.createdAt)}
               </p>
             </div>
           </div>

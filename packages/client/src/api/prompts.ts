@@ -3,6 +3,8 @@ import type {
   Prompt,
   PromptListItem,
   PromptVersion,
+  PublicPromptListItem,
+  PublicPromptDetail,
   CreatePromptDto,
   UpdatePromptDto,
 } from '@ssrprompt/shared';
@@ -57,15 +59,51 @@ export const promptsApi = {
   /**
    * Create a new version
    */
-  createVersion: (promptId: string, content: string, commitMessage?: string) =>
-    apiClient.post<PromptVersion>(`/prompts/${promptId}/versions`, {
-      content,
-      commitMessage,
-    }),
+  createVersion: (
+    promptId: string,
+    data: {
+      content: string;
+      commitMessage?: string;
+      variables?: unknown[];
+      messages?: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>;
+      config?: Record<string, unknown>;
+      defaultModelId?: string | null;
+    }
+  ) => apiClient.post<PromptVersion>(`/prompts/${promptId}/versions`, data),
 
   /**
    * Get a specific version
    */
   getVersion: (promptId: string, version: number) =>
     apiClient.get<PromptVersion>(`/prompts/${promptId}/versions/${version}`),
+
+  // ============ Public Prompt Plaza ============
+
+  /**
+   * List all public prompts for the plaza
+   */
+  listPublic: () => apiClient.get<PublicPromptListItem[]>('/prompts/public'),
+
+  /**
+   * Get public prompt detail (latest public version snapshot)
+   */
+  getPublicById: (id: string) => apiClient.get<PublicPromptDetail>(`/prompts/public/${id}`),
+
+  /**
+   * Get public versions for a public prompt
+   */
+  getPublicVersions: (promptId: string) =>
+    apiClient.get<PromptVersion[]>(`/prompts/public/${promptId}/versions`),
+
+  /**
+   * Get a specific public version for a public prompt
+   */
+  getPublicVersion: (promptId: string, version: number) =>
+    apiClient.get<PromptVersion>(`/prompts/public/${promptId}/versions/${version}`),
+
+  /**
+   * Copy a public prompt into the user's space
+   */
+  copyPublic: (promptId: string, data?: { version?: number; name?: string }) =>
+    apiClient.post<Prompt>(`/prompts/public/${promptId}/copy`, data ?? {}),
 };

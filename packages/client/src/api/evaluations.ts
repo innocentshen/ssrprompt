@@ -18,8 +18,8 @@ import type {
  */
 export interface EvaluationWithRelations extends Evaluation {
   prompt?: { id: string; name: string; currentVersion: number } | null;
-  model?: { id: string; name: string; modelId: string } | null;
-  judgeModel?: { id: string; name: string; modelId: string } | null;
+  model?: { id: string; name: string; modelId: string; provider?: { type: string } } | null;
+  judgeModel?: { id: string; name: string; modelId: string; provider?: { type: string } } | null;
   testCases?: TestCase[];
   criteria?: EvaluationCriterion[];
   runs?: EvaluationRun[];

@@ -20,14 +20,18 @@ export class PromptsRepository extends TenantRepository<
    */
   async findAllList(userId: string): Promise<Partial<Prompt>[]> {
     const prompts = await this.delegate.findMany({
-      where: { userId },
+      where: {
+        userId,
+      },
       select: {
         id: true,
+        userId: true,
         name: true,
         description: true,
         currentVersion: true,
         defaultModelId: true,
         orderIndex: true,
+        isPublic: true,
         createdAt: true,
         updatedAt: true,
       },
@@ -38,32 +42,11 @@ export class PromptsRepository extends TenantRepository<
   }
 
   /**
-   * Find prompt by ID with full details
-   */
-  async findById(userId: string, id: string): Promise<Prompt | null> {
-    const prompt = await this.delegate.findUnique({
-      where: { id },
-      include: {
-        defaultModel: {
-          select: { id: true, name: true, modelId: true },
-        },
-      },
-    });
-
-    if (!prompt) return null;
-    if (prompt.userId !== userId) {
-      throw new Error('Access denied');
-    }
-
-    return transformResponse(prompt);
-  }
-
-  /**
    * Create a prompt
    */
-  async create(userId: string, data: Omit<Prisma.PromptCreateInput, 'userId'>): Promise<Prompt> {
+  async create(userId: string, data: Omit<Prisma.PromptCreateInput, 'userId' | 'user'>): Promise<Prompt> {
     const prompt = await this.delegate.create({
-      data: { ...data, userId },
+      data: { ...data, user: { connect: { id: userId } } },
     });
 
     return transformResponse(prompt);
@@ -124,16 +107,30 @@ export class PromptVersionsRepository extends ChildRepository<
   async createVersion(
     promptId: string,
     version: number,
-    content: string,
-    commitMessage?: string
+    data: {
+      content: string;
+      commitMessage?: string;
+      variables?: Prisma.InputJsonValue;
+      messages?: Prisma.InputJsonValue;
+      config?: Prisma.InputJsonValue;
+      defaultModelId?: string | null;
+      isPublic?: boolean;
+      publishedAt?: Date | null;
+    }
   ): Promise<PromptVersion> {
     const [versionRecord] = await prisma.$transaction([
       this.delegate.create({
         data: {
           promptId,
           version,
-          content,
-          commitMessage,
+          content: data.content,
+          commitMessage: data.commitMessage,
+          variables: data.variables ?? [],
+          messages: data.messages ?? [],
+          config: data.config ?? {},
+          defaultModelId: data.defaultModelId ?? null,
+          isPublic: data.isPublic ?? false,
+          publishedAt: data.publishedAt ?? null,
         },
       }),
       prisma.prompt.update({

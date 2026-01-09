@@ -5,3 +5,4 @@ export { TracesPage } from './TracesPage';
 export { LoginPage } from './LoginPage';
 export { HomePage } from './HomePage';
 export { PromptWizardPage } from './PromptWizardPage';
+export { PromptPlazaPage } from './PromptPlazaPage';

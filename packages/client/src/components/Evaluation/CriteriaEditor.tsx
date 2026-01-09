@@ -6,7 +6,7 @@ import type { EvaluationCriterion } from '../../types';
 
 interface CriteriaEditorProps {
   criteria: EvaluationCriterion[];
-  onAdd: (criterion: Omit<EvaluationCriterion, 'id' | 'evaluation_id' | 'created_at'>) => void;
+  onAdd: (criterion: Omit<EvaluationCriterion, 'id' | 'evaluationId' | 'createdAt'>) => void;
   onUpdate: (criterion: EvaluationCriterion) => void;
   onDelete: (id: string) => void;
 }
@@ -28,14 +28,14 @@ function EditableCriterion({
 }: EditableCriterionProps) {
   const { t } = useTranslation('evaluation');
   const [localName, setLocalName] = useState(criterion.name);
-  const [localDescription, setLocalDescription] = useState(criterion.description);
-  const [localPrompt, setLocalPrompt] = useState(criterion.prompt);
+  const [localDescription, setLocalDescription] = useState(criterion.description || '');
+  const [localPrompt, setLocalPrompt] = useState(criterion.prompt || '');
   const [localWeight, setLocalWeight] = useState(String(criterion.weight));
 
   useEffect(() => {
     setLocalName(criterion.name);
-    setLocalDescription(criterion.description);
-    setLocalPrompt(criterion.prompt);
+    setLocalDescription(criterion.description || '');
+    setLocalPrompt(criterion.prompt || '');
     setLocalWeight(String(criterion.weight));
   }, [criterion.id]);
 
@@ -62,13 +62,14 @@ function EditableCriterion({
           hasChanged = true;
         }
         break;
-      case 'weight':
+      case 'weight': {
         const weightNum = parseFloat(localWeight) || 0;
         if (weightNum !== criterion.weight) {
           updated.weight = weightNum;
           hasChanged = true;
         }
         break;
+      }
     }
 
     if (hasChanged) {

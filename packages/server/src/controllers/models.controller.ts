@@ -48,7 +48,7 @@ export class ModelsController {
 
       if (!model) {
         return res.status(404).json({
-          error: { code: 'NOT_FOUND', message: 'Model not found' },
+          error: { code: 'NOT_FOUND', message: 'Model not found', requestId: req.requestId },
         });
       }
 

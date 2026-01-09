@@ -1,8 +1,9 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Play, CheckCircle2, XCircle, Loader2, Image, FileText, Table2, AlertCircle } from 'lucide-react';
+import { Play, CheckCircle2, XCircle, Loader2, Image, FileText, AlertCircle } from 'lucide-react';
 import { Button } from '../ui';
-import { callAIModel, type FileAttachment } from '../../lib/ai-service';
+import { chatApi } from '../../api/chat';
+import { uploadFileAttachment, type FileAttachment } from '../../lib/ai-service';
 import { getModelCapabilities, inferPdfSupport } from '../../lib/model-capabilities';
 import type { Model, Provider } from '../../types';
 
@@ -30,6 +31,15 @@ const TEST_IMAGE_BASE64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQ
 // 简单的 PDF 文件 (Base64) - 包含文本 "Test PDF"
 const TEST_PDF_BASE64 = 'JVBERi0xLjQKMSAwIG9iago8PAovVHlwZSAvQ2F0YWxvZwovUGFnZXMgMiAwIFIKPj4KZW5kb2JqCjIgMCBvYmoKPDwKL1R5cGUgL1BhZ2VzCi9LaWRzIFszIDAgUl0KL0NvdW50IDEKPJ4KZW5kb2JqCjMgMCBvYmoKPDwKL1R5cGUgL1BhZ2UKL1BhcmVudCAyIDAgUgovTWVkaWFCb3ggWzAgMCA2MTIgNzkyXQovQ29udGVudHMgNCAwIFIKL1Jlc291cmNlcyA8PAovRm9udCA8PCAvRjEgNSAwIFIgPj4KPj4KPj4KZW5kb2JqCjQgMCBvYmoKPDwKL0xlbmd0aCA0NAo+PgpzdHJlYW0KQlQKL0YxIDI0IFRmCjEwMCA3MDAgVGQKKFRlc3QgUERGKSBUagpFVAplbmRzdHJlYW0KZW5kb2JqCjUgMCBvYmoKPDwKL1R5cGUgL0ZvbnQKL1N1YnR5cGUgL1R5cGUxCi9CYXNlRm9udCAvSGVsdmV0aWNhCj4+CmVuZG9iagp4cmVmCjAgNgowMDAwMDAwMDAwIDY1NTM1IGYgCjAwMDAwMDAwMDkgMDAwMDAgbiAKMDAwMDAwMDA1OCAwMDAwMCBuIAowMDAwMDAwMTE1IDAwMDAwIG4gCjAwMDAwMDAyNzAgMDAwMDAgbiAKMDAwMDAwMDM2MyAwMDAwMCBuIAp0cmFpbGVyCjw8Ci9TaXplIDYKL1Jvb3QgMSAwIFIKPj4Kc3RhcnR4cmVmCjQ0MgolJUVPRgo=';
 
+function base64ToFile(base64: string, filename: string, mimeType: string): File {
+  const binaryString = atob(base64);
+  const bytes = new Uint8Array(binaryString.length);
+  for (let i = 0; i < binaryString.length; i++) {
+    bytes[i] = binaryString.charCodeAt(i);
+  }
+  return new File([bytes], filename, { type: mimeType });
+}
+
 export function ModelCapabilityTest({ models, providers }: ModelCapabilityTestProps) {
   const { t } = useTranslation('settings');
   const [testing, setTesting] = useState(false);
@@ -41,22 +51,48 @@ export function ModelCapabilityTest({ models, providers }: ModelCapabilityTestPr
     setResults([]);
 
     // 获取所有启用的模型
+    let testImage: FileAttachment;
+    let testPdf: FileAttachment;
+
+    try {
+      testImage = await uploadFileAttachment(base64ToFile(TEST_IMAGE_BASE64, 'test.png', 'image/png'));
+      testPdf = await uploadFileAttachment(base64ToFile(TEST_PDF_BASE64, 'test.pdf', 'application/pdf'));
+    } catch (e) {
+      setTesting(false);
+      setCurrentModel('');
+      setResults([
+        {
+          modelId: 'setup',
+          modelName: 'Setup',
+          providerName: '',
+          providerType: '',
+          imageSupport: 'failed',
+          pdfSupport: 'failed',
+          imageExpected: true,
+          pdfExpected: true,
+          imageError: e instanceof Error ? e.message : String(e),
+          pdfError: e instanceof Error ? e.message : String(e),
+        },
+      ]);
+      return;
+    }
+
     const enabledModels = models.filter(m => {
-      const provider = providers.find(p => p.id === m.provider_id);
-      return provider?.enabled && provider?.api_key;
+      const provider = providers.find(p => p.id === m.providerId);
+      return provider?.enabled && provider?.apiKey;
     });
 
     const newResults: TestResult[] = [];
 
     for (const model of enabledModels) {
-      const provider = providers.find(p => p.id === model.provider_id);
+      const provider = providers.find(p => p.id === model.providerId);
       if (!provider) continue;
 
       setCurrentModel(model.name);
 
       // 获取预期能力
-      const capabilities = getModelCapabilities(provider.type, model.model_id, model.supports_vision);
-      const expectedPdf = inferPdfSupport(provider.type, model.model_id);
+      const capabilities = getModelCapabilities(provider.type, model.modelId, model.supportsVision);
+      const expectedPdf = inferPdfSupport(provider.type, model.modelId);
 
       const result: TestResult = {
         modelId: model.id,
@@ -72,23 +108,19 @@ export function ModelCapabilityTest({ models, providers }: ModelCapabilityTestPr
       // 测试图片支持
       if (capabilities.supportsVision) {
         try {
-          const imageFile: FileAttachment = {
-            name: 'test.png',
-            type: 'image/png',
-            base64: TEST_IMAGE_BASE64,
-          };
+          const response = await chatApi.complete({
+            modelId: model.id,
+            messages: [{
+              role: 'user',
+              content: [
+                { type: 'text', text: '这是什么颜色的图片？请用一个词回答。' },
+                { type: 'file_ref', file_ref: { fileId: testImage.fileId } }
+              ]
+            }],
+            saveTrace: false,
+          });
 
-          const response = await callAIModel(
-            provider,
-            model.model_id,
-            '这是什么颜色的图片？请用一个词回答。',
-            [imageFile]
-          );
-
-          if (response.error) {
-            result.imageSupport = 'failed';
-            result.imageError = response.error;
-          } else if (response.content) {
+          if (response.content) {
             result.imageSupport = 'success';
           } else {
             result.imageSupport = 'failed';
@@ -105,23 +137,20 @@ export function ModelCapabilityTest({ models, providers }: ModelCapabilityTestPr
       // 测试 PDF 支持
       if (expectedPdf && capabilities.supportsVision) {
         try {
-          const pdfFile: FileAttachment = {
-            name: 'test.pdf',
-            type: 'application/pdf',
-            base64: TEST_PDF_BASE64,
-          };
+          // Note: PDF support varies by provider, some use image_url with data URI
+          const response = await chatApi.complete({
+            modelId: model.id,
+            messages: [{
+              role: 'user',
+              content: [
+                { type: 'text', text: '这个 PDF 文件中包含什么文字？请直接回答。' },
+                { type: 'file_ref', file_ref: { fileId: testPdf.fileId } }
+              ]
+            }],
+            saveTrace: false,
+          });
 
-          const response = await callAIModel(
-            provider,
-            model.model_id,
-            '这个 PDF 文件中包含什么文字？请直接回答。',
-            [pdfFile]
-          );
-
-          if (response.error) {
-            result.pdfSupport = 'failed';
-            result.pdfError = response.error;
-          } else if (response.content) {
+          if (response.content) {
             result.pdfSupport = 'success';
           } else {
             result.pdfSupport = 'failed';

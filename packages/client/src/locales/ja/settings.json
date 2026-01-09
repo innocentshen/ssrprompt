@@ -35,6 +35,7 @@
   "deleteConfirm": "削除を確認しますか？",
   "deleteWarning": "この操作は取り消せません",
   "optimization": "パフォーマンス最適化",
+  "fileOcr": "ファイル OCR",
   "customOpenAICompatible": "カスタム（OpenAI互換）",
   "enabled": "有効",
   "disabled": "無効",

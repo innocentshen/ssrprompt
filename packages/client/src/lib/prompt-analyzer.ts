@@ -1,5 +1,5 @@
-import type { Provider, PromptMessage, PromptVariable } from '../types';
-import { callAIModel } from './ai-service';
+import type { PromptMessage, PromptVariable } from '../types';
+import { chatApi } from '../api/chat';
 import { getOptimizationSettings } from '../components/Settings/OptimizationSettings';
 import i18n from '../i18n';
 
@@ -32,8 +32,7 @@ export interface PromptAnalysisResult {
 }
 
 export async function analyzePrompt(
-  provider: Provider,
-  modelName: string,
+  modelId: string,
   request: PromptAnalysisRequest
 ): Promise<PromptAnalysisResult> {
   // Get the configurable analysis prompt from settings
@@ -51,12 +50,14 @@ export async function analyzePrompt(
 
   const userMessage = `请分析以下 Prompt:\n\n${promptContent}${variablesInfo}`;
 
-  const result = await callAIModel(
-    provider,
-    modelName,
-    analysisSystemPrompt,
-    userMessage
-  );
+  const result = await chatApi.complete({
+    modelId,
+    messages: [
+      { role: 'system', content: analysisSystemPrompt },
+      { role: 'user', content: userMessage },
+    ],
+    saveTrace: false,
+  });
 
   try {
     let jsonContent = result.content.trim();

@@ -37,17 +37,17 @@ export function ParameterPanel({ config, onChange, disabled = false, defaultOpen
   const isModified = JSON.stringify(config) !== JSON.stringify(DEFAULT_PROMPT_CONFIG);
 
   return (
-    <Collapsible
-      title={t('modelParameters')}
-      icon={<Settings2 className="w-4 h-4 text-cyan-400 light:text-cyan-600" />}
-      defaultOpen={defaultOpen}
-      action={
-        isModified && (
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={handleReset}
-            className="text-xs"
+      <Collapsible
+        title={t('modelParameters')}
+        icon={<Settings2 className="w-4 h-4 text-cyan-400 light:text-cyan-600" />}
+        defaultOpen={defaultOpen}
+        action={
+          !disabled && isModified && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={handleReset}
+              className="text-xs"
           >
             <RotateCcw className="w-3 h-3 mr-1" />
             {t('resetToDefault')}

@@ -1,6 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import { promptsService } from '../services/prompts.service.js';
-import { CreatePromptSchema, UpdatePromptSchema, CreateVersionSchema } from '@ssrprompt/shared';
+import { CreatePromptSchema, UpdatePromptSchema, CreateVersionSchema, CopyPublicPromptSchema } from '@ssrprompt/shared';
 import { z } from 'zod';
 
 export class PromptsController {
@@ -20,6 +20,40 @@ export class PromptsController {
   }
 
   /**
+   * GET /prompts/public
+   * List all public prompts for the plaza
+   */
+  async listPublic(_req: Request, res: Response, next: NextFunction) {
+    try {
+      const prompts = await promptsService.listPublicPrompts();
+      res.json({ data: prompts });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * GET /prompts/public/:id
+   * Get public prompt detail (latest public version snapshot)
+   */
+  async getPublicById(req: Request, res: Response, next: NextFunction) {
+    try {
+      const { id } = req.params;
+      const prompt = await promptsService.getPublicPrompt(id);
+
+      if (!prompt) {
+        return res.status(404).json({
+          error: { code: 'NOT_FOUND', message: 'Prompt not found', requestId: req.requestId },
+        });
+      }
+
+      res.json({ data: prompt });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
    * GET /prompts/:id
    * Get a single prompt by ID
    */
@@ -32,7 +66,7 @@ export class PromptsController {
 
       if (!prompt) {
         return res.status(404).json({
-          error: { code: 'NOT_FOUND', message: 'Prompt not found' },
+          error: { code: 'NOT_FOUND', message: 'Prompt not found', requestId: req.requestId },
         });
       }
 
@@ -149,6 +183,20 @@ export class PromptsController {
   }
 
   /**
+   * GET /prompts/public/:id/versions
+   * Get public versions for a public prompt
+   */
+  async getPublicVersions(req: Request, res: Response, next: NextFunction) {
+    try {
+      const { id } = req.params;
+      const versions = await promptsService.getPublicVersions(id);
+      res.json({ data: versions });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
    * POST /prompts/:id/versions
    * Create a new version
    */
@@ -178,7 +226,7 @@ export class PromptsController {
 
       if (isNaN(version)) {
         return res.status(400).json({
-          error: { code: 'VALIDATION_ERROR', message: 'Invalid version number' },
+          error: { code: 'VALIDATION_ERROR', message: 'Invalid version number', requestId: req.requestId },
         });
       }
 
@@ -186,11 +234,56 @@ export class PromptsController {
 
       if (!versionData) {
         return res.status(404).json({
-          error: { code: 'NOT_FOUND', message: 'Version not found' },
+          error: { code: 'NOT_FOUND', message: 'Version not found', requestId: req.requestId },
         });
       }
 
       res.json({ data: versionData });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * GET /prompts/public/:id/versions/:version
+   * Get a specific public version for a public prompt
+   */
+  async getPublicVersion(req: Request, res: Response, next: NextFunction) {
+    try {
+      const { id, version: versionStr } = req.params;
+      const version = parseInt(versionStr, 10);
+
+      if (isNaN(version)) {
+        return res.status(400).json({
+          error: { code: 'VALIDATION_ERROR', message: 'Invalid version number', requestId: req.requestId },
+        });
+      }
+
+      const versionData = await promptsService.getPublicVersion(id, version);
+      if (!versionData) {
+        return res.status(404).json({
+          error: { code: 'NOT_FOUND', message: 'Version not found', requestId: req.requestId },
+        });
+      }
+
+      res.json({ data: versionData });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * POST /prompts/public/:id/copy
+   * Copy a public prompt into the user's private space
+   */
+  async copyPublic(req: Request, res: Response, next: NextFunction) {
+    try {
+      const userId = req.user!.userId;
+      const { id } = req.params;
+      const input = CopyPublicPromptSchema.parse(req.body ?? {});
+
+      const prompt = await promptsService.copyPublicPrompt(userId, id, input);
+      res.status(201).json({ data: prompt });
     } catch (error) {
       next(error);
     }

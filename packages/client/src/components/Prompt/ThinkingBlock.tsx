@@ -4,8 +4,9 @@ import { Brain, ChevronDown, ChevronRight, Clock } from 'lucide-react';
 import { MarkdownRenderer } from '../ui';
 
 interface ThinkingBlockProps {
-  content: string;
-  isStreaming: boolean;
+  content?: string;
+  thinking?: string;  // Alias for content
+  isStreaming?: boolean;
   durationMs?: number;
   defaultExpanded?: boolean;
 }
@@ -21,10 +22,12 @@ function formatDuration(ms: number): string {
 
 export function ThinkingBlock({
   content,
-  isStreaming,
+  thinking,
+  isStreaming = false,
   durationMs,
   defaultExpanded = false,
 }: ThinkingBlockProps) {
+  const actualContent = content || thinking || '';
   const { t } = useTranslation('prompts');
   const [isExpanded, setIsExpanded] = useState(defaultExpanded);
   const [elapsedTime, setElapsedTime] = useState(0);
@@ -52,15 +55,15 @@ export function ThinkingBlock({
   }, [isStreaming]);
 
   useEffect(() => {
-    if (!isStreaming && content) {
+    if (!isStreaming && actualContent) {
       const timer = setTimeout(() => {
         setIsExpanded(false);
       }, 500);
       return () => clearTimeout(timer);
     }
-  }, [isStreaming, content]);
+  }, [isStreaming, actualContent]);
 
-  if (!content && !isStreaming) {
+  if (!actualContent && !isStreaming) {
     return null;
   }
 
@@ -128,8 +131,8 @@ export function ThinkingBlock({
             : 'bg-slate-800/30 light:bg-slate-50 border-slate-700 light:border-slate-200'
         }`}>
           <div className="text-sm text-slate-400 light:text-slate-600">
-            {content ? (
-              <MarkdownRenderer content={content} />
+            {actualContent ? (
+              <MarkdownRenderer content={actualContent} />
             ) : (
               <span className="text-slate-500 light:text-slate-400 italic">
                 {t('thinkingContent')}

@@ -1,6 +1,6 @@
 import { Image, FileText, File, Code, FileType } from 'lucide-react';
 import type { FileAttachment } from '../../lib/ai-service';
-import { isImageFile, isPdfFile, getFileIconType, getFileTypeName } from '../../lib/file-utils';
+import { getFileIconType, getFileTypeName } from '../../lib/file-utils';
 
 interface AttachmentPreviewProps {
   attachment: FileAttachment;
@@ -57,7 +57,6 @@ export function AttachmentPreview({
   onClick,
   showName = false,
 }: AttachmentPreviewProps) {
-  const isImage = isImageFile(attachment);
   const iconType = getFileIconType(attachment);
   const Icon = getIconComponent(iconType);
   const typeName = getFileTypeName(attachment);
@@ -73,25 +72,6 @@ export function AttachmentPreview({
       onClick();
     }
   };
-
-  if (isImage) {
-    return (
-      <div className={showName ? 'flex flex-col items-center gap-1' : ''}>
-        <div className={containerClass} onClick={handleClick}>
-          <img
-            src={`data:${attachment.type};base64,${attachment.base64}`}
-            alt={attachment.name}
-            className="w-full h-full object-cover"
-          />
-        </div>
-        {showName && (
-          <span className="text-xs text-slate-500 light:text-slate-600 max-w-[80px] truncate text-center">
-            {attachment.name}
-          </span>
-        )}
-      </div>
-    );
-  }
 
   return (
     <div className={showName ? 'flex flex-col items-center gap-1' : ''}>

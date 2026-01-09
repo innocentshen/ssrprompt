@@ -1,5 +1,11 @@
 import apiClient from './client';
-import type { Provider, Model, CreateProviderDto, UpdateProviderDto, CreateModelDto, UpdateModelDto } from '@ssrprompt/shared';
+import type { Provider, Model, CreateProviderDto, UpdateProviderDto, CreateModelDto, UpdateModelDto, ProviderType } from '@ssrprompt/shared';
+
+export interface TestConnectionResult {
+  success: boolean;
+  message: string;
+  latencyMs?: number;
+}
 
 /**
  * Providers API
@@ -29,6 +35,12 @@ export const providersApi = {
    * Delete a provider
    */
   delete: (id: string) => apiClient.delete<void>(`/providers/${id}`),
+
+  /**
+   * Test connection to a provider
+   */
+  testConnection: (data: { type: ProviderType; apiKey: string; baseUrl?: string | null }) =>
+    apiClient.post<TestConnectionResult>('/providers/test-connection', data),
 };
 
 /**

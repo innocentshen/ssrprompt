@@ -1,6 +1,12 @@
 import { Request, Response, NextFunction } from 'express';
 import { providersService } from '../services/index.js';
-import { CreateProviderSchema, UpdateProviderSchema } from '@ssrprompt/shared';
+import { CreateProviderSchema, UpdateProviderSchema, TestConnectionSchema } from '@ssrprompt/shared';
+
+function maskApiKey(apiKey: string): string {
+  const value = apiKey?.trim();
+  if (!value) return '';
+  return `${value.substring(0, 8)}...`;
+}
 
 export class ProvidersController {
   /**
@@ -15,7 +21,7 @@ export class ProvidersController {
       // Mask API keys in response
       const maskedProviders = providers.map((p) => ({
         ...p,
-        apiKey: p.apiKey.substring(0, 8) + '...',
+        apiKey: maskApiKey(p.apiKey),
       }));
 
       res.json({ data: maskedProviders });
@@ -37,7 +43,7 @@ export class ProvidersController {
 
       if (!provider) {
         return res.status(404).json({
-          error: { code: 'NOT_FOUND', message: 'Provider not found' },
+          error: { code: 'NOT_FOUND', message: 'Provider not found', requestId: req.requestId },
         });
       }
 
@@ -45,7 +51,7 @@ export class ProvidersController {
       res.json({
         data: {
           ...provider,
-          apiKey: provider.apiKey.substring(0, 8) + '...',
+          apiKey: maskApiKey(provider.apiKey),
         },
       });
     } catch (error) {
@@ -67,7 +73,7 @@ export class ProvidersController {
       res.status(201).json({
         data: {
           ...provider,
-          apiKey: provider.apiKey.substring(0, 8) + '...',
+          apiKey: maskApiKey(provider.apiKey),
         },
       });
     } catch (error) {
@@ -90,7 +96,7 @@ export class ProvidersController {
       res.json({
         data: {
           ...provider,
-          apiKey: provider.apiKey.substring(0, 8) + '...',
+          apiKey: maskApiKey(provider.apiKey),
         },
       });
     } catch (error) {
@@ -110,6 +116,22 @@ export class ProvidersController {
       await providersService.delete(userId, id);
 
       res.status(204).send();
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * POST /providers/test-connection
+   * Test connection to a provider API
+   */
+  async testConnection(req: Request, res: Response, next: NextFunction) {
+    try {
+      const data = TestConnectionSchema.parse(req.body);
+
+      const result = await providersService.testConnection(data);
+
+      res.json({ data: result });
     } catch (error) {
       next(error);
     }

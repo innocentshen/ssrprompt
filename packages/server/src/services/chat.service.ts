@@ -1,7 +1,20 @@
 import { prisma } from '../config/database.js';
-import { decrypt } from '../utils/crypto.js';
+import { decrypt, isEncrypted } from '../utils/crypto.js';
 import { AppError } from '@ssrprompt/shared';
 import type { Model, Provider } from '@prisma/client';
+
+function normalizeProviderErrorMessage(provider: Provider, status: number, message: string): string {
+  const normalized = message?.trim() || '';
+  if (!normalized) return normalized;
+
+  // OpenRouter returns this message when auth is missing/invalid (it also supports cookie auth for the web app).
+  if (status === 401 && /cookie auth credentials/i.test(normalized)) {
+    const label = provider.type === 'openrouter' ? 'OpenRouter' : provider.type;
+    return `${label} authentication failed: API key is missing or invalid (cookie auth is not supported). Please configure the provider API key in Settings.`;
+  }
+
+  return normalized;
+}
 
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant';
@@ -9,10 +22,14 @@ export interface ChatMessage {
 }
 
 export interface ContentPart {
-  type: 'text' | 'image_url';
+  type: 'text' | 'image_url' | 'file';
   text?: string;
   image_url?: {
     url: string;
+  };
+  file?: {
+    filename: string;
+    file_data: string;  // data:application/pdf;base64,...
   };
 }
 
@@ -23,6 +40,11 @@ export interface ChatCompletionOptions {
   frequency_penalty?: number;
   presence_penalty?: number;
   stream?: boolean;
+  reasoning?: {
+    enabled: boolean;
+    effort?: 'default' | 'none' | 'low' | 'medium' | 'high';
+  };
+  responseFormat?: object;
 }
 
 export interface StreamChunk {
@@ -62,7 +84,7 @@ export async function getModelWithProvider(
   }
 
   // Verify provider belongs to user
-  if (model.provider.userId !== userId) {
+  if (model.provider.userId !== userId && !model.provider.isSystem) {
     throw new AppError(403, 'FORBIDDEN', 'Access denied to this model');
   }
 
@@ -71,7 +93,23 @@ export async function getModelWithProvider(
   }
 
   // Decrypt API key
-  const apiKey = decrypt(model.provider.apiKey);
+  const rawApiKey = model.provider.apiKey?.trim() || '';
+  if (!rawApiKey || rawApiKey === '***decryption-failed***' || (rawApiKey.endsWith('...') && rawApiKey.length <= 20)) {
+    throw new AppError(400, 'PROVIDER_ERROR', 'Provider API key is not configured. Please set it in Settings.');
+  }
+
+  let apiKey = rawApiKey;
+  if (isEncrypted(rawApiKey)) {
+    try {
+      apiKey = decrypt(rawApiKey);
+    } catch {
+      throw new AppError(
+        400,
+        'PROVIDER_ERROR',
+        'Provider API key cannot be decrypted. Please re-enter the API key in Settings.'
+      );
+    }
+  }
 
   return { model, provider: model.provider, apiKey };
 }
@@ -143,6 +181,47 @@ function transformForAnthropic(messages: ChatMessage[]): {
 }
 
 /**
+ * Build reasoning parameters for different providers
+ */
+function buildReasoningParams(
+  provider: Provider,
+  modelId: string,
+  reasoning?: ChatCompletionOptions['reasoning']
+): Record<string, unknown> {
+  if (!reasoning?.enabled || reasoning.effort === 'none' || reasoning.effort === 'default') {
+    return {};
+  }
+
+  const lowerModelId = modelId.toLowerCase();
+
+  // OpenRouter uses reasoning.effort format
+  if (provider.type === 'openrouter') {
+    return {
+      reasoning: {
+        effort: reasoning.effort,
+      },
+    };
+  }
+
+  // Gemini models
+  if (provider.type === 'gemini' || lowerModelId.includes('gemini')) {
+    return {
+      reasoning: {
+        effort: reasoning.effort,
+      },
+    };
+  }
+
+  // Anthropic extended thinking
+  if (provider.type === 'anthropic' || lowerModelId.includes('claude')) {
+    // Anthropic uses thinking parameter
+    return {};  // Anthropic handles this differently
+  }
+
+  return {};
+}
+
+/**
  * Build request body for provider
  */
 export function buildRequestBody(
@@ -165,7 +244,7 @@ export function buildRequestBody(
   }
 
   // OpenAI-compatible format (OpenAI, OpenRouter, Gemini, Custom)
-  return {
+  const body: Record<string, unknown> = {
     model: model.modelId,
     messages,
     temperature: options.temperature,
@@ -175,6 +254,22 @@ export function buildRequestBody(
     presence_penalty: options.presence_penalty,
     stream: options.stream ?? true,
   };
+
+  // Add stream_options for usage tracking
+  if (options.stream !== false) {
+    body.stream_options = { include_usage: true };
+  }
+
+  // Add reasoning parameters
+  const reasoningParams = buildReasoningParams(provider, model.modelId, options.reasoning);
+  Object.assign(body, reasoningParams);
+
+  // Add response format if specified
+  if (options.responseFormat) {
+    body.response_format = options.responseFormat;
+  }
+
+  return body;
 }
 
 /**
@@ -276,10 +371,12 @@ export async function* streamChatCompletion(
 
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
+    const rawMessage = errorData.error?.message || `Provider API error: ${response.statusText}`;
+    const message = normalizeProviderErrorMessage(provider, response.status, rawMessage);
     throw new AppError(
       response.status,
       'PROVIDER_ERROR',
-      errorData.error?.message || `Provider API error: ${response.statusText}`,
+      message,
       errorData
     );
   }
@@ -345,10 +442,12 @@ export async function chatCompletion(
 
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
+    const rawMessage = errorData.error?.message || `Provider API error: ${response.statusText}`;
+    const message = normalizeProviderErrorMessage(provider, response.status, rawMessage);
     throw new AppError(
       response.status,
       'PROVIDER_ERROR',
-      errorData.error?.message || `Provider API error: ${response.statusText}`,
+      message,
       errorData
     );
   }

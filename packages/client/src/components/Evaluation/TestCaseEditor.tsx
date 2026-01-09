@@ -1,11 +1,11 @@
 import { useState, useRef, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Trash2, Paperclip, X, FileText, Image, Check, Loader2, Eye, EyeOff, Maximize2, Code, File, Play } from 'lucide-react';
+import { Trash2, Paperclip, X, FileText, Image, Loader2, Eye, EyeOff, Maximize2, Code, File, Play } from 'lucide-react';
 import { Button, Modal, MarkdownRenderer } from '../ui';
 import { AttachmentModal } from '../Prompt/AttachmentModal';
-import type { TestCase, FileAttachmentData, ProviderType } from '../../types';
+import type { TestCase, FileAttachment, ProviderType } from '../../types';
 import { getFileInputAccept, isSupportedFileType, getFileIconType } from '../../lib/file-utils';
-import { isFileTypeAllowed } from '../../lib/model-capabilities';
+import { uploadFileAttachment } from '../../lib/ai-service';
 
 interface FileUploadCapabilities {
   accept: string;
@@ -92,35 +92,27 @@ export function TestCaseEditor({
   onDelete,
   onRunSingle,
   isRunning,
-  isSaving,
-  fileUploadCapabilities,
-  providerType,
-  modelId,
-  supportsVision = true,
 }: TestCaseEditorProps) {
   const { t } = useTranslation('evaluation');
   const { t: tCommon } = useTranslation('common');
   const [isExpanded, setIsExpanded] = useState(false);
-  const [localSaving, setLocalSaving] = useState(false);
   const [previewInput, setPreviewInput] = useState(false);
   const [previewExpected, setPreviewExpected] = useState(false);
   const [expandedField, setExpandedField] = useState<'input' | 'expected' | null>(null);
   const [expandedValue, setExpandedValue] = useState('');
   const [expandedPreview, setExpandedPreview] = useState(false);
-  const [previewAttachment, setPreviewAttachment] = useState<FileAttachmentData | null>(null);
+  const [previewAttachment, setPreviewAttachment] = useState<FileAttachment | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleUpdate = async (updates: Partial<TestCase>) => {
-    setLocalSaving(true);
     await onUpdate({ ...testCase, ...updates });
-    setLocalSaving(false);
   };
 
   const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files || files.length === 0) return;
 
-    const newAttachments: FileAttachmentData[] = [];
+    const newAttachments: FileAttachment[] = [];
 
     for (const file of Array.from(files)) {
       if (!isSupportedFileType(file)) {
@@ -128,17 +120,16 @@ export function TestCaseEditor({
       }
 
       // 根据模型能力检查是否允许上传
-      if (providerType && modelId && !isFileTypeAllowed(file, providerType, modelId, supportsVision)) {
-        // 静默跳过不支持的文件类型（UI 层面已经通过 accept 限制了）
+      if (file.size > 20 * 1024 * 1024) {
         continue;
       }
 
-      const base64 = await fileToBase64(file);
-      newAttachments.push({
-        name: file.name,
-        type: file.type,
-        base64,
-      });
+      try {
+        const attachment = await uploadFileAttachment(file);
+        newAttachments.push(attachment);
+      } catch {
+        // Ignore upload failures per file (user can retry)
+      }
     }
 
     const updatedAttachments = [...testCase.attachments, ...newAttachments];
@@ -151,19 +142,6 @@ export function TestCaseEditor({
     }
   };
 
-  const fileToBase64 = (file: File): Promise<string> => {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => {
-        const result = reader.result as string;
-        const base64 = result.split(',')[1];
-        resolve(base64);
-      };
-      reader.onerror = reject;
-      reader.readAsDataURL(file);
-    });
-  };
-
   const removeAttachment = async (attachmentIndex: number) => {
     const updatedAttachments = testCase.attachments.filter((_, i) => i !== attachmentIndex);
     await handleUpdate({
@@ -173,8 +151,8 @@ export function TestCaseEditor({
 
   const updateVariable = async (varName: string, value: string) => {
     await handleUpdate({
-      input_variables: {
-        ...testCase.input_variables,
+      inputVariables: {
+        ...testCase.inputVariables,
         [varName]: value,
       },
     });
@@ -198,28 +176,35 @@ export function TestCaseEditor({
 
   const openExpandModal = (field: 'input' | 'expected') => {
     setExpandedField(field);
-    setExpandedValue(field === 'input' ? testCase.input_text : (testCase.expected_output || ''));
+    setExpandedValue(field === 'input' ? testCase.inputText : (testCase.expectedOutput || ''));
     setExpandedPreview(false);
   };
 
   const closeExpandModal = async () => {
     if (expandedField === 'input') {
-      await handleUpdate({ input_text: expandedValue });
+      await handleUpdate({ inputText: expandedValue });
     } else if (expandedField === 'expected') {
-      await handleUpdate({ expected_output: expandedValue || null });
+      await handleUpdate({ expectedOutput: expandedValue || null });
     }
     setExpandedField(null);
     setExpandedValue('');
     setExpandedPreview(false);
   };
 
-  const showSaving = isSaving || localSaving;
-
   return (
     <div className="border border-slate-700 light:border-slate-200 rounded-lg bg-slate-800/30 light:bg-white overflow-hidden light:shadow-sm">
-      <button
+      <div
+        role="button"
+        tabIndex={0}
+        aria-expanded={isExpanded}
         onClick={() => setIsExpanded(!isExpanded)}
-        className="w-full flex items-center justify-between p-4 hover:bg-slate-800/50 light:hover:bg-slate-50 transition-colors"
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            setIsExpanded((prev) => !prev);
+          }
+        }}
+        className="w-full flex items-center justify-between p-4 hover:bg-slate-800/50 light:hover:bg-slate-50 transition-colors cursor-pointer focus:outline-none focus:ring-2 focus:ring-cyan-500/40"
       >
         <div className="flex items-center gap-3">
           <span className="w-6 h-6 rounded-full bg-slate-700 light:bg-cyan-100 flex items-center justify-center text-xs font-medium text-slate-300 light:text-cyan-700">
@@ -231,17 +216,6 @@ export function TestCaseEditor({
           {testCase.attachments.length > 0 && (
             <span className="text-xs text-slate-500 light:text-slate-600">
               ({t('attachmentsCount', { count: testCase.attachments.length })})
-            </span>
-          )}
-          {showSaving ? (
-            <span className="flex items-center gap-1 text-xs text-amber-400 light:text-amber-600">
-              <Loader2 className="w-3 h-3 animate-spin" />
-              {t('saving')}
-            </span>
-          ) : (
-            <span className="flex items-center gap-1 text-xs text-emerald-400 light:text-emerald-600">
-              <Check className="w-3 h-3" />
-              {t('saved')}
             </span>
           )}
         </div>
@@ -275,7 +249,7 @@ export function TestCaseEditor({
             <Trash2 className="w-4 h-4 text-slate-500 light:text-slate-400 hover:text-rose-400" />
           </Button>
         </div>
-      </button>
+      </div>
 
       {isExpanded && (
         <div className="p-4 pt-0 space-y-4 border-t border-slate-700/50 light:border-slate-200">
@@ -321,8 +295,8 @@ export function TestCaseEditor({
             </div>
             {previewInput ? (
               <div className="w-full min-h-[80px] px-3 py-2 bg-slate-800 light:bg-slate-50 border border-slate-600 light:border-slate-300 rounded-lg text-sm overflow-auto max-h-48">
-                {testCase.input_text ? (
-                  <MarkdownRenderer content={testCase.input_text} />
+                {testCase.inputText ? (
+                  <MarkdownRenderer content={testCase.inputText} />
                 ) : (
                   <span className="text-slate-500 light:text-slate-400">{t('noContent')}</span>
                 )}
@@ -330,8 +304,8 @@ export function TestCaseEditor({
             ) : (
               <LocalInput
                 as="textarea"
-                value={testCase.input_text}
-                onChange={(value) => handleUpdate({ input_text: value })}
+                value={testCase.inputText}
+                onChange={(value) => handleUpdate({ inputText: value })}
                 placeholder={t('enterTestContent')}
                 rows={3}
                 className="w-full px-3 py-2 bg-slate-800 light:bg-white border border-slate-600 light:border-slate-300 rounded-lg text-slate-200 light:text-slate-800 placeholder-slate-500 light:placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-cyan-500/50 focus:border-cyan-500 resize-y text-sm font-mono min-h-[80px]"
@@ -351,7 +325,7 @@ export function TestCaseEditor({
                       {`{{${varName}}}`}
                     </span>
                     <LocalInput
-                      value={testCase.input_variables[varName] || ''}
+                      value={testCase.inputVariables[varName] || ''}
                       onChange={(value) => updateVariable(varName, value)}
                       placeholder={t('valueOfVar', { name: varName })}
                       className="flex-1 px-2 py-1 bg-slate-800 light:bg-white border border-slate-600 light:border-slate-300 rounded text-sm text-slate-200 light:text-slate-800 placeholder-slate-500 light:placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-cyan-500/50"
@@ -404,14 +378,16 @@ export function TestCaseEditor({
                 ref={fileInputRef}
                 type="file"
                 onChange={handleFileSelect}
-                accept={fileUploadCapabilities?.accept || getFileInputAccept()}
+                accept={getFileInputAccept()}
                 multiple
                 className="hidden"
               />
               <Button
                 variant="secondary"
                 size="sm"
-                onClick={() => fileInputRef.current?.click()}
+                onClick={() => {
+                  fileInputRef.current?.click();
+                }}
               >
                 <Paperclip className="w-4 h-4" />
                 <span>{t('addAttachment')}</span>
@@ -449,8 +425,8 @@ export function TestCaseEditor({
             </div>
             {previewExpected ? (
               <div className="w-full min-h-[56px] px-3 py-2 bg-slate-800 light:bg-slate-50 border border-slate-600 light:border-slate-300 rounded-lg text-sm overflow-auto max-h-48">
-                {testCase.expected_output ? (
-                  <MarkdownRenderer content={testCase.expected_output} />
+                {testCase.expectedOutput ? (
+                  <MarkdownRenderer content={testCase.expectedOutput} />
                 ) : (
                   <span className="text-slate-500 light:text-slate-400">{t('noContent')}</span>
                 )}
@@ -458,8 +434,8 @@ export function TestCaseEditor({
             ) : (
               <LocalInput
                 as="textarea"
-                value={testCase.expected_output || ''}
-                onChange={(value) => handleUpdate({ expected_output: value || null })}
+                value={testCase.expectedOutput || ''}
+                onChange={(value) => handleUpdate({ expectedOutput: value || null })}
                 placeholder={t('expectedOutputPlaceholder')}
                 rows={2}
                 className="w-full px-3 py-2 bg-slate-800 light:bg-white border border-slate-600 light:border-slate-300 rounded-lg text-slate-200 light:text-slate-800 placeholder-slate-500 light:placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-cyan-500/50 focus:border-cyan-500 resize-y text-sm font-mono min-h-[56px]"
@@ -484,10 +460,6 @@ export function TestCaseEditor({
             </p>
           </div>
 
-          <p className="text-xs text-slate-500 light:text-slate-600 flex items-center gap-1">
-            <Check className="w-3 h-3" />
-            {t('autoSaveHint')}
-          </p>
         </div>
       )}
 

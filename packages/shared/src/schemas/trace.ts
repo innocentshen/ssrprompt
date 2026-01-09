@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { FileAttachmentSchema } from './evaluation';
+import { FileAttachmentSchema } from './evaluation.js';
 
 // Create Trace Schema
 export const CreateTraceSchema = z.object({

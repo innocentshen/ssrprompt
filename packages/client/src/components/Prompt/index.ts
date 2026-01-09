@@ -10,3 +10,5 @@ export { StructuredOutputEditor } from './StructuredOutputEditor';
 export { ThinkingBlock } from './ThinkingBlock';
 export { AttachmentPreview, AttachmentList } from './AttachmentPreview';
 export { AttachmentModal } from './AttachmentModal';
+export { PromptTestPanel } from './PromptTestPanel';
+export type { PromptTestPanelProps } from './PromptTestPanel';

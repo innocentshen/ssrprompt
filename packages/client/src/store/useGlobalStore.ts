@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { devtools } from 'zustand/middleware';
-import type { Provider, Model } from '../types/database';
-import { getDatabase } from '../lib/database';
+import type { Provider, Model } from '../types';
+import { providersApi, modelsApi } from '../api';
 
 interface GlobalState {
   // Data
@@ -52,15 +52,14 @@ export const useGlobalStore = create<GlobalState>()(
         set({ isLoading: true });
 
         try {
-          const db = getDatabase();
           const [providersRes, modelsRes] = await Promise.all([
-            db.from('providers').select('*').order('created_at'),
-            db.from('models').select('*').order('created_at'),
+            providersApi.list(),
+            modelsApi.list(),
           ]);
 
           set({
-            providers: providersRes.data || [],
-            models: modelsRes.data || [],
+            providers: providersRes,
+            models: modelsRes,
             lastFetched: Date.now(),
           });
         } catch (error) {
@@ -73,25 +72,28 @@ export const useGlobalStore = create<GlobalState>()(
       updateProvider: (id, data) => {
         set(state => ({
           providers: state.providers.map(p =>
-            p.id === id ? { ...p, ...data, updated_at: new Date().toISOString() } : p
+            p.id === id ? { ...p, ...data, updatedAt: new Date().toISOString() } : p
           ),
         }));
       },
 
       addProvider: (provider) => {
-        set(state => ({ providers: [...state.providers, provider] }));
+        set(state => ({
+          providers: [...state.providers, provider],
+        }));
       },
 
       removeProvider: (id) => {
         set(state => ({
           providers: state.providers.filter(p => p.id !== id),
-          // Also remove associated models
-          models: state.models.filter(m => m.provider_id !== id),
+          models: state.models.filter(m => m.providerId !== id),
         }));
       },
 
       addModel: (model) => {
-        set(state => ({ models: [...state.models, model] }));
+        set(state => ({
+          models: [...state.models, model],
+        }));
       },
 
       updateModel: (id, data) => {
@@ -108,22 +110,13 @@ export const useGlobalStore = create<GlobalState>()(
         }));
       },
 
-      // Selectors
       getProviderById: (id) => get().providers.find(p => p.id === id),
-
       getModelById: (id) => get().models.find(m => m.id === id),
-
-      getModelsByProviderId: (providerId) =>
-        get().models.filter(m => m.provider_id === providerId),
-
-      getEnabledProviders: () =>
-        get().providers.filter(p => p.enabled),
-
+      getModelsByProviderId: (providerId) => get().models.filter(m => m.providerId === providerId),
+      getEnabledProviders: () => get().providers.filter(p => p.enabled),
       getEnabledModels: () => {
-        const enabledProviderIds = new Set(
-          get().providers.filter(p => p.enabled).map(p => p.id)
-        );
-        return get().models.filter(m => enabledProviderIds.has(m.provider_id));
+        const enabledProviderIds = new Set(get().providers.filter(p => p.enabled).map(p => p.id));
+        return get().models.filter(m => enabledProviderIds.has(m.providerId));
       },
     }),
     { name: 'global-store' }

@@ -48,15 +48,27 @@ const initialModals: Record<ModalName, boolean> = {
   attachmentPreview: false,
 };
 
-export const useUIStore = create<UIState>((set, get) => ({
+export const useUIStore = create<UIState>((set) => ({
   // Toast state
   toasts: [],
 
   showToast: (type, message) => {
     const id = Math.random().toString(36).slice(2);
-    set(state => ({
-      toasts: [...state.toasts, { id, type, message }],
-    }));
+    let added = false;
+
+    set(state => {
+      // Avoid duplicate toasts (common in React StrictMode / repeated errors)
+      if (state.toasts.some(t => t.type === type && t.message === message)) {
+        return state;
+      }
+
+      added = true;
+      return {
+        toasts: [...state.toasts, { id, type, message }],
+      };
+    });
+
+    if (!added) return;
 
     // Auto remove after 3 seconds
     setTimeout(() => {

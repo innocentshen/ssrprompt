@@ -2,6 +2,7 @@ import { Trace, Prisma } from '@prisma/client';
 import { TenantRepository } from './base.repository.js';
 import { prisma } from '../config/database.js';
 import { transformResponse } from '../utils/transform.js';
+import { ForbiddenError } from '@ssrprompt/shared';
 
 type TraceDelegate = typeof prisma.trace;
 
@@ -44,12 +45,13 @@ export class TracesRepository extends TenantRepository<
           userId: true,
           promptId: true,
           modelId: true,
+          input: true,  // Include input for preview
           tokensInput: true,
           tokensOutput: true,
           latencyMs: true,
           status: true,
           createdAt: true,
-          // Exclude large fields: input, output, thinkingContent, attachments
+          // Exclude large fields: output, thinkingContent, attachments
         },
         orderBy: { createdAt: 'desc' },
         skip,
@@ -80,7 +82,7 @@ export class TracesRepository extends TenantRepository<
 
     if (!trace) return null;
     if (trace.userId !== userId) {
-      throw new Error('Access denied');
+      throw new ForbiddenError('Access denied to Trace');
     }
 
     return transformResponse(trace);
@@ -89,9 +91,9 @@ export class TracesRepository extends TenantRepository<
   /**
    * Create a trace
    */
-  async create(userId: string, data: Omit<Prisma.TraceCreateInput, 'userId'>): Promise<Trace> {
+  async create(userId: string, data: Omit<Prisma.TraceCreateInput, 'userId' | 'user'>): Promise<Trace> {
     const trace = await this.delegate.create({
-      data: { ...data, userId },
+      data: { ...data, user: { connect: { id: userId } } },
     });
 
     return transformResponse(trace);

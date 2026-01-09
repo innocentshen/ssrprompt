@@ -17,7 +17,8 @@ export class ApiError extends Error {
     public status: number,
     public code: string,
     message: string,
-    public details?: unknown
+    public details?: unknown,
+    public requestId?: string
   ) {
     super(message);
     this.name = 'ApiError';
@@ -115,6 +116,7 @@ class ApiClient {
 
     if (!response.ok) {
       const error = data.error || { code: 'UNKNOWN_ERROR', message: 'Request failed' };
+      const requestId = response.headers.get('X-Request-Id') || undefined;
 
       // Handle token expiration - auto refresh for demo mode
       if (response.status === 401 && error.code === 'TOKEN_EXPIRED' && this.isDemoMode()) {
@@ -122,7 +124,7 @@ class ApiClient {
         throw new ApiError(response.status, 'RETRY_NEEDED', 'Token refreshed, please retry');
       }
 
-      throw new ApiError(response.status, error.code, error.message, error.details);
+      throw new ApiError(response.status, error.code, error.message, error.details, requestId);
     }
 
     return data.data;

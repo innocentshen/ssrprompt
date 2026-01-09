@@ -9,5 +9,9 @@
   "directToWorkspace": "直接進入工作區",
   "debugDescription": "已有 Prompt？直接進入開發工作區，進行測試、比較和最佳化。",
   "enterWorkspace": "進入工作區",
+  "explorePlaza": "探索 Prompt 廣場",
+  "publicPrompts": "瀏覽公開 Prompt",
+  "plazaDescription": "發現並復用社群分享的優質 Prompt。",
+  "enterPlaza": "進入 Prompt 廣場",
   "tip": "提示：您可以隨時從側邊欄導覽到不同功能區域"
 }

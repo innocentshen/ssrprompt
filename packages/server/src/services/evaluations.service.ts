@@ -6,14 +6,96 @@ import {
   testCaseResultsRepository,
   type EvaluationWithRelations,
 } from '../repositories/evaluations.repository.js';
+import { prisma } from '../config/database.js';
 import { transformResponse, transformDecimal } from '../utils/transform.js';
 import { AppError } from '@ssrprompt/shared';
 import type { Prisma, TestCase, EvaluationCriterion, EvaluationRun, TestCaseResult } from '@prisma/client';
+import { filesService } from './files.service.js';
+
+type LegacyBase64Attachment = { name: string; type: string; base64: string };
+type StoredAttachment = { fileId: string; name: string; type: string; size: number };
+
+function normalizeBase64(value: string): string {
+  const comma = value.indexOf(',');
+  if (value.startsWith('data:') && comma !== -1) {
+    return value.slice(comma + 1);
+  }
+  return value;
+}
+
+function isLegacyBase64Attachments(value: unknown): value is LegacyBase64Attachment[] {
+  if (!Array.isArray(value) || value.length === 0) return false;
+  return value.every((item) => {
+    if (!item || typeof item !== 'object') return false;
+    const record = item as Record<string, unknown>;
+    return (
+      typeof record.name === 'string' &&
+      typeof record.type === 'string' &&
+      typeof record.base64 === 'string' &&
+      record.base64.length > 0
+    );
+  });
+}
+
+function isStoredAttachments(value: unknown): value is StoredAttachment[] {
+  if (!Array.isArray(value) || value.length === 0) return false;
+  return value.every((item) => {
+    if (!item || typeof item !== 'object') return false;
+    const record = item as Record<string, unknown>;
+    return typeof record.fileId === 'string' && typeof record.name === 'string' && typeof record.type === 'string';
+  });
+}
 
 /**
  * Evaluations Service
  */
 export class EvaluationsService {
+  private async assertPromptAccessible(
+    userId: string,
+    promptId: string
+  ): Promise<{ id: string; isPublic: boolean }> {
+    const prompt = await prisma.prompt.findFirst({
+      where: {
+        id: promptId,
+        OR: [{ userId }, { isPublic: true }],
+      },
+      select: { id: true, isPublic: true },
+    });
+
+    if (!prompt) {
+      throw new AppError(404, 'NOT_FOUND', 'Prompt not found');
+    }
+
+    return prompt;
+  }
+
+  private async assertModelAccessible(userId: string, modelId: string): Promise<void> {
+    const model = await prisma.model.findUnique({
+      where: { id: modelId },
+      select: {
+        id: true,
+        provider: {
+          select: { userId: true, isSystem: true },
+        },
+      },
+    });
+
+    if (!model) {
+      throw new AppError(404, 'NOT_FOUND', 'Model not found');
+    }
+
+    if (model.provider.userId !== userId && !model.provider.isSystem) {
+      throw new AppError(403, 'FORBIDDEN', 'Access denied to this model');
+    }
+  }
+
+  /**
+   * Verify the evaluation is owned by the current user (not just readable/public).
+   */
+  async assertOwner(userId: string, evaluationId: string): Promise<void> {
+    await evaluationsRepository.findByIdOrThrow(userId, evaluationId);
+  }
+
   /**
    * Get all evaluations for a user
    */
@@ -30,6 +112,41 @@ export class EvaluationsService {
     if (!evaluation) {
       throw new AppError(404, 'NOT_FOUND', 'Evaluation not found');
     }
+
+    // Lazy-migrate legacy base64 attachments to stored files for owner views.
+    if (evaluation.userId === userId && evaluation.testCases && evaluation.testCases.length > 0) {
+      for (const testCase of evaluation.testCases) {
+        const rawAttachments = (testCase.attachments ?? []) as unknown;
+        if (!rawAttachments || isStoredAttachments(rawAttachments) || !isLegacyBase64Attachments(rawAttachments)) {
+          continue;
+        }
+
+        const migrated: StoredAttachment[] = [];
+        for (const attachment of rawAttachments) {
+          const buffer = Buffer.from(normalizeBase64(attachment.base64), 'base64');
+          const stored = await filesService.upload(userId, {
+            originalName: attachment.name,
+            mimeType: attachment.type,
+            size: buffer.length,
+            buffer,
+          });
+          migrated.push({
+            fileId: stored.id,
+            name: stored.originalName,
+            type: stored.mimeType,
+            size: stored.size,
+          });
+        }
+
+        await testCasesRepository.update(testCase.id, {
+          attachments: migrated as unknown as Prisma.JsonArray,
+        });
+
+        // Ensure the response matches the migrated state without an extra fetch.
+        (testCase as unknown as { attachments: unknown }).attachments = migrated;
+      }
+    }
+
     return transformResponse(evaluation);
   }
 
@@ -61,6 +178,16 @@ export class EvaluationsService {
       }>;
     }
   ): Promise<EvaluationWithRelations> {
+    if (data.promptId) {
+      await this.assertPromptAccessible(userId, data.promptId);
+    }
+    if (data.modelId) {
+      await this.assertModelAccessible(userId, data.modelId);
+    }
+    if (data.judgeModelId) {
+      await this.assertModelAccessible(userId, data.judgeModelId);
+    }
+
     const evaluation = await evaluationsRepository.createWithRelations(
       userId,
       {
@@ -104,10 +231,11 @@ export class EvaluationsService {
       status?: 'pending' | 'running' | 'completed' | 'failed';
       config?: Record<string, unknown>;
       results?: Record<string, unknown>;
+      isPublic?: boolean;
+      completedAt?: string | null;
     }
   ): Promise<EvaluationWithRelations> {
-    // Verify ownership
-    await this.findById(userId, id);
+    const existing = await evaluationsRepository.findByIdOrThrow(userId, id);
 
     const updateData: Prisma.EvaluationUpdateInput = {};
 
@@ -115,20 +243,59 @@ export class EvaluationsService {
     if (data.status !== undefined) updateData.status = data.status;
     if (data.config !== undefined) updateData.config = data.config as Prisma.JsonObject;
     if (data.results !== undefined) updateData.results = data.results as Prisma.JsonObject;
+    if (data.isPublic !== undefined) updateData.isPublic = data.isPublic;
+
+    if (data.completedAt !== undefined) {
+      updateData.completedAt = data.completedAt ? new Date(data.completedAt) : null;
+    }
 
     // Handle relation updates
     if (data.promptId !== undefined) {
+      if (data.promptId) {
+        await this.assertPromptAccessible(userId, data.promptId);
+      }
       updateData.prompt = data.promptId ? { connect: { id: data.promptId } } : { disconnect: true };
     }
     if (data.modelId !== undefined) {
+      if (data.modelId) {
+        await this.assertModelAccessible(userId, data.modelId);
+      }
       updateData.model = data.modelId ? { connect: { id: data.modelId } } : { disconnect: true };
     }
     if (data.judgeModelId !== undefined) {
+      if (data.judgeModelId) {
+        await this.assertModelAccessible(userId, data.judgeModelId);
+      }
       updateData.judgeModel = data.judgeModelId ? { connect: { id: data.judgeModelId } } : { disconnect: true };
     }
 
-    if (data.status === 'completed') {
+    if (data.status === 'completed' || data.status === 'failed') {
       updateData.completedAt = new Date();
+    }
+    if (data.status === 'pending' || data.status === 'running') {
+      updateData.completedAt = null;
+    }
+
+    // Guardrail: a public evaluation must not reference a private prompt.
+    const nextPromptId =
+      data.promptId !== undefined ? (data.promptId ?? null) : (existing.promptId ?? null);
+
+    const nextIsPublic =
+      data.isPublic !== undefined ? data.isPublic : existing.isPublic;
+
+    if (nextIsPublic && nextPromptId) {
+      const prompt = await prisma.prompt.findUnique({
+        where: { id: nextPromptId },
+        select: { isPublic: true },
+      });
+
+      // If user explicitly tries to publish, block. Otherwise auto-unpublish to keep invariants.
+      if (!prompt?.isPublic) {
+        if (data.isPublic === true) {
+          throw new AppError(400, 'VALIDATION_ERROR', 'Cannot publish an evaluation for a private prompt');
+        }
+        updateData.isPublic = false;
+      }
     }
 
     await evaluationsRepository.update(userId, id, updateData);
@@ -139,7 +306,7 @@ export class EvaluationsService {
    * Delete an evaluation
    */
   async delete(userId: string, id: string): Promise<void> {
-    await this.findById(userId, id);
+    await this.assertOwner(userId, id);
     await evaluationsRepository.delete(userId, id);
   }
 
@@ -167,7 +334,7 @@ export class TestCasesService {
     evaluationId: string,
     data: {
       name?: string;
-      inputText: string;
+      inputText?: string;
       inputVariables?: Record<string, unknown>;
       attachments?: unknown[];
       expectedOutput?: string;
@@ -176,11 +343,11 @@ export class TestCasesService {
     }
   ): Promise<TestCase> {
     // Verify evaluation ownership
-    await this.evaluationsService.findById(userId, evaluationId);
+    await this.evaluationsService.assertOwner(userId, evaluationId);
 
     const testCase = await testCasesRepository.create(evaluationId, {
       name: data.name || '',
-      inputText: data.inputText,
+      inputText: data.inputText || '',
       inputVariables: (data.inputVariables as Prisma.JsonObject) || {},
       attachments: (data.attachments as Prisma.JsonArray) || [],
       expectedOutput: data.expectedOutput,
@@ -213,7 +380,7 @@ export class TestCasesService {
     }
 
     // Verify evaluation ownership
-    await this.evaluationsService.findById(userId, testCase.evaluationId);
+    await this.evaluationsService.assertOwner(userId, testCase.evaluationId);
 
     const updateData: Prisma.TestCaseUpdateInput = {};
     if (data.name !== undefined) updateData.name = data.name;
@@ -238,7 +405,7 @@ export class TestCasesService {
     }
 
     // Verify evaluation ownership
-    await this.evaluationsService.findById(userId, testCase.evaluationId);
+    await this.evaluationsService.assertOwner(userId, testCase.evaluationId);
 
     await testCasesRepository.delete(id);
   }
@@ -265,7 +432,7 @@ export class CriteriaService {
     }
   ): Promise<EvaluationCriterion> {
     // Verify evaluation ownership
-    await this.evaluationsService.findById(userId, evaluationId);
+    await this.evaluationsService.assertOwner(userId, evaluationId);
 
     const criterion = await criteriaRepository.create(evaluationId, {
       name: data.name,
@@ -298,7 +465,7 @@ export class CriteriaService {
     }
 
     // Verify evaluation ownership
-    await this.evaluationsService.findById(userId, criterion.evaluationId);
+    await this.evaluationsService.assertOwner(userId, criterion.evaluationId);
 
     const updateData: Prisma.EvaluationCriterionUpdateInput = {};
     if (data.name !== undefined) updateData.name = data.name;
@@ -321,7 +488,7 @@ export class CriteriaService {
     }
 
     // Verify evaluation ownership
-    await this.evaluationsService.findById(userId, criterion.evaluationId);
+    await this.evaluationsService.assertOwner(userId, criterion.evaluationId);
 
     await criteriaRepository.delete(id);
   }
@@ -344,7 +511,7 @@ export class RunsService {
     }
   ): Promise<EvaluationRun> {
     // Verify evaluation ownership
-    await this.evaluationsService.findById(userId, evaluationId);
+    await this.evaluationsService.assertOwner(userId, evaluationId);
 
     const run = await runsRepository.create(evaluationId, {
       status: 'pending',
@@ -374,7 +541,7 @@ export class RunsService {
     }
 
     // Verify evaluation ownership
-    await this.evaluationsService.findById(userId, run.evaluationId);
+    await this.evaluationsService.assertOwner(userId, run.evaluationId);
 
     const updateData: Prisma.EvaluationRunUpdateInput = {};
     if (data.status !== undefined) updateData.status = data.status;
@@ -401,7 +568,7 @@ export class RunsService {
     }
 
     // Verify evaluation ownership
-    await this.evaluationsService.findById(userId, run.evaluationId);
+    await this.evaluationsService.assertOwner(userId, run.evaluationId);
 
     await runsRepository.delete(id);
   }
@@ -445,7 +612,16 @@ export class RunsService {
     }
 
     // Verify evaluation ownership
-    await this.evaluationsService.findById(userId, run.evaluationId);
+    await this.evaluationsService.assertOwner(userId, run.evaluationId);
+
+    const testCase = await testCasesRepository.findById(data.testCaseId);
+    if (!testCase) {
+      throw new AppError(404, 'NOT_FOUND', 'Test case not found');
+    }
+
+    if (testCase.evaluationId !== run.evaluationId) {
+      throw new AppError(400, 'VALIDATION_ERROR', 'Test case does not belong to this evaluation');
+    }
 
     const result = await testCaseResultsRepository.create({
       evaluation: { connect: { id: run.evaluationId } },

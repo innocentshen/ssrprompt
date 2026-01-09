@@ -1,4 +1,4 @@
-import { Router } from 'express';
+import { Router, type IRouter } from 'express';
 import { authenticateJWT } from '../middleware/auth.js';
 
 import authRoutes from './auth.routes.js';
@@ -13,8 +13,11 @@ import testCasesRoutes from './test-cases.routes.js';
 import criteriaRoutes from './criteria.routes.js';
 import runsRoutes from './runs.routes.js';
 import chatRoutes from './chat.routes.js';
+import usersRoutes from './users.routes.js';
+import filesRoutes from './files.routes.js';
+import ocrRoutes from './ocr.routes.js';
 
-const router = Router();
+const router: IRouter = Router();
 
 // Public routes
 router.use('/auth', authRoutes);
@@ -35,5 +38,14 @@ router.use('/runs', authenticateJWT, runsRoutes);
 
 // Chat routes
 router.use('/chat', authenticateJWT, chatRoutes);
+
+// File routes
+router.use('/files', authenticateJWT, filesRoutes);
+
+// OCR routes
+router.use('/ocr', authenticateJWT, ocrRoutes);
+
+// Admin routes
+router.use('/users', authenticateJWT, usersRoutes);
 
 export default router;

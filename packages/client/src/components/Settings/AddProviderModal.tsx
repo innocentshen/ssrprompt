@@ -1,20 +1,22 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Bot, Sparkles, Cpu, Server, Globe } from 'lucide-react';
-import { Modal, Button, Input, Select } from '../ui';
+import { Modal, Button, Input } from '../ui';
 import type { ProviderType } from '../../types';
 
 interface AddProviderModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onAdd: (name: string, type: ProviderType) => Promise<void>;
+  onAdd: (name: string, type: ProviderType, isSystem?: boolean) => Promise<void>;
+  isAdmin?: boolean;
 }
 
-export function AddProviderModal({ isOpen, onClose, onAdd }: AddProviderModalProps) {
+export function AddProviderModal({ isOpen, onClose, onAdd, isAdmin }: AddProviderModalProps) {
   const { t } = useTranslation('settings');
   const { t: tCommon } = useTranslation('common');
   const [name, setName] = useState('');
   const [type, setType] = useState<ProviderType>('openai');
+  const [isSystem, setIsSystem] = useState(false);
   const [loading, setLoading] = useState(false);
 
   const providerTypes = [
@@ -30,16 +32,15 @@ export function AddProviderModal({ isOpen, onClose, onAdd }: AddProviderModalPro
     if (!name.trim()) return;
     setLoading(true);
     try {
-      await onAdd(name.trim(), type);
+      await onAdd(name.trim(), type, isAdmin ? isSystem : undefined);
       setName('');
       setType('openai');
+      setIsSystem(false);
       onClose();
     } finally {
       setLoading(false);
     }
   };
-
-  const selectedType = providerTypes.find((t) => t.value === type);
 
   return (
     <Modal isOpen={isOpen} onClose={onClose} title={t('addProvider')} size="md">
@@ -99,6 +100,25 @@ export function AddProviderModal({ isOpen, onClose, onAdd }: AddProviderModalPro
             })}
           </div>
         </div>
+
+        {isAdmin && (
+          <label className="flex items-center gap-3 p-3 rounded-lg border border-slate-700 light:border-slate-300 hover:bg-slate-800/50 light:hover:bg-slate-100 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={isSystem}
+              onChange={(e) => setIsSystem(e.target.checked)}
+              className="w-4 h-4 rounded border-slate-600 text-cyan-500 focus:ring-cyan-500"
+            />
+            <div>
+              <p className="text-sm font-medium text-slate-200 light:text-slate-800">
+                {t('systemProvider')}
+              </p>
+              <p className="text-xs text-slate-400 light:text-slate-500">
+                {t('systemProviderDesc')}
+              </p>
+            </div>
+          </label>
+        )}
 
         <div className="flex justify-end gap-3 pt-4 border-t border-slate-700 light:border-slate-200">
           <Button type="button" variant="ghost" onClick={onClose}>

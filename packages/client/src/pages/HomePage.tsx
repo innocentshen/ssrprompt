@@ -1,6 +1,5 @@
 import { useTranslation } from 'react-i18next';
-import { Compass, FileText, Wand2, ArrowRight, Sparkles } from 'lucide-react';
-import { Button } from '../components/ui';
+import { Compass, FileText, Wand2, ArrowRight, Sparkles, Globe } from 'lucide-react';
 
 interface HomePageProps {
   onNavigate: (page: string) => void;
@@ -74,6 +73,32 @@ export function HomePage({ onNavigate }: HomePageProps) {
           <div className="flex items-center text-teal-400 light:text-teal-600 font-medium">
             <FileText className="w-4 h-4 mr-2" />
             <span>{t('enterWorkspace')}</span>
+            <ArrowRight className="w-4 h-4 ml-2 group-hover:translate-x-1 transition-transform" />
+          </div>
+        </button>
+
+        {/* Prompt Plaza */}
+        <button
+          onClick={() => onNavigate('plaza')}
+          className="group p-8 rounded-2xl border-2 border-slate-700 light:border-slate-200 hover:border-violet-500 light:hover:border-violet-400 bg-slate-900/50 light:bg-white transition-all text-left hover:shadow-lg hover:shadow-violet-500/10 md:col-span-2"
+        >
+          <div className="flex items-center gap-4 mb-4">
+            <div className="p-3 rounded-xl bg-gradient-to-br from-violet-500 to-fuchsia-500 text-white group-hover:scale-110 transition-transform">
+              <Globe className="w-6 h-6" />
+            </div>
+            <div>
+              <h2 className="text-xl font-semibold text-white light:text-slate-900">
+                {t('explorePlaza')}
+              </h2>
+              <p className="text-sm text-violet-400 light:text-violet-600">{t('publicPrompts')}</p>
+            </div>
+          </div>
+          <p className="text-slate-400 light:text-slate-600 mb-4">
+            {t('plazaDescription')}
+          </p>
+          <div className="flex items-center text-violet-400 light:text-violet-600 font-medium">
+            <Globe className="w-4 h-4 mr-2" />
+            <span>{t('enterPlaza')}</span>
             <ArrowRight className="w-4 h-4 ml-2 group-hover:translate-x-1 transition-transform" />
           </div>
         </button>

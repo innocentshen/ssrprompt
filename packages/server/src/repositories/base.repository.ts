@@ -2,6 +2,25 @@ import { PrismaClient } from '@prisma/client';
 import { ForbiddenError, NotFoundError } from '@ssrprompt/shared';
 import { prisma } from '../config/database.js';
 
+// Define a more flexible delegate type that works with Prisma
+type PrismaDelegate = {
+  findMany: (args: any) => Promise<any[]>;
+  findUnique: (args: any) => Promise<any | null>;
+  create: (args: any) => Promise<any>;
+  update: (args: any) => Promise<any>;
+  delete: (args: any) => Promise<any>;
+  count?: (args: any) => Promise<number>;
+};
+
+export interface FindOptions {
+  where?: Record<string, unknown>;
+  orderBy?: Record<string, 'asc' | 'desc'> | Record<string, 'asc' | 'desc'>[];
+  skip?: number;
+  take?: number;
+  select?: Record<string, boolean>;
+  include?: Record<string, boolean | object>;
+}
+
 /**
  * Base repository with tenant isolation
  * All methods require userId for data isolation
@@ -10,14 +29,7 @@ export abstract class TenantRepository<
   TModel,
   TCreateInput,
   TUpdateInput,
-  TDelegate extends {
-    findMany: (args: unknown) => Promise<unknown[]>;
-    findUnique: (args: unknown) => Promise<unknown | null>;
-    create: (args: unknown) => Promise<unknown>;
-    update: (args: unknown) => Promise<unknown>;
-    delete: (args: unknown) => Promise<unknown>;
-    count: (args: unknown) => Promise<number>;
-  }
+  TDelegate extends PrismaDelegate = PrismaDelegate
 > {
   protected prisma: PrismaClient = prisma;
   protected abstract delegate: TDelegate;
@@ -114,6 +126,9 @@ export abstract class TenantRepository<
    * Count records for a user
    */
   async count(userId: string, where?: Record<string, unknown>): Promise<number> {
+    if (!this.delegate.count) {
+      throw new Error(`Count not supported for ${this.entityName}`);
+    }
     return this.delegate.count({
       where: { userId, ...where },
     });
@@ -127,13 +142,7 @@ export abstract class ChildRepository<
   TModel,
   TCreateInput,
   TUpdateInput,
-  TDelegate extends {
-    findMany: (args: unknown) => Promise<unknown[]>;
-    findUnique: (args: unknown) => Promise<unknown | null>;
-    create: (args: unknown) => Promise<unknown>;
-    update: (args: unknown) => Promise<unknown>;
-    delete: (args: unknown) => Promise<unknown>;
-  }
+  TDelegate extends PrismaDelegate = PrismaDelegate
 > {
   protected prisma: PrismaClient = prisma;
   protected abstract delegate: TDelegate;

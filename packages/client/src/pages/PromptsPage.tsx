@@ -1,13 +1,11 @@
-import { useState, useEffect, useRef, useMemo, useCallback, MutableRefObject } from 'react';
+import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import { flushSync } from 'react-dom';
 import {
   Plus,
   Search,
-  Play,
   Save,
   History,
-  Wand2,
   FileText,
   Clock,
   Loader2,
@@ -22,52 +20,73 @@ import {
   Eye,
   Sparkles,
   Check,
-  Cloud,
-  CloudOff,
   Copy,
   Maximize2,
   Square,
   Settings2,
+  Globe,
+  Play,
 } from 'lucide-react';
 import { Button, Input, Modal, Badge, Select, MarkdownRenderer, Tabs, Collapsible, ModelSelector } from '../components/ui';
-import { MessageList, ParameterPanel, VariableEditor, DebugHistory, PromptOptimizer, PromptObserver, StructuredOutputEditor, ThinkingBlock, AttachmentModal } from '../components/Prompt';
+import { MessageList, ParameterPanel, VariableEditor, DebugHistory, PromptOptimizer, PromptObserver, StructuredOutputEditor, ThinkingBlock, AttachmentModal, PromptTestPanel } from '../components/Prompt';
 import { ReasoningSelector } from '../components/Common/ReasoningSelector';
 import type { DebugRun } from '../components/Prompt';
-import { getDatabase, isDatabaseConfigured } from '../lib/database';
-import { callAIModel, streamAIModel, fileToBase64, extractThinking, type AICallOptions, type FileAttachment, type StreamUsage } from '../lib/ai-service';
+import { promptsApi, ApiError } from '../api';
+import { chatApi, type ContentPart } from '../api/chat';
+import { uploadFileAttachment, extractThinking, type FileAttachment } from '../lib/ai-service';
 import { analyzePrompt, type PromptAnalysisResult } from '../lib/prompt-analyzer';
-import { toResponseFormat } from '../lib/schema-utils';
+import { inferReasoningSupport } from '../lib/model-capabilities';
 import { getFileInputAccept, isSupportedFileType } from '../lib/file-utils';
-import { getFileUploadCapabilities, isFileTypeAllowed, inferReasoningSupport } from '../lib/model-capabilities';
-import type { Prompt, Model, Provider, PromptVersion, PromptMessage, PromptConfig, PromptVariable, ReasoningEffort } from '../types';
-import { DEFAULT_PROMPT_CONFIG } from '../types/database';
+import { formatDateTime } from '../lib/date-utils';
+import type { Prompt, PromptVersion, OcrProvider } from '../types';
+import { PromptMessage, PromptConfig, PromptVariable, ReasoningEffort, DEFAULT_PROMPT_CONFIG } from '../types/database';
 import { useToast } from '../store/useUIStore';
 import { useGlobalStore } from '../store/useGlobalStore';
 import { invalidatePromptsCache } from '../lib/cache-events';
 
 type TabType = 'edit' | 'observe' | 'optimize';
 
-// Debounce helper with cancel support
-function debounce<T extends (...args: never[]) => unknown>(
-  fn: T,
-  delay: number,
-  cancelRef?: MutableRefObject<(() => void) | null>
-): (...args: Parameters<T>) => void {
-  let timeoutId: ReturnType<typeof setTimeout>;
-  const debouncedFn = (...args: Parameters<T>) => {
-    clearTimeout(timeoutId);
-    timeoutId = setTimeout(() => fn(...args), delay);
+// Type conversion helpers for shared package types to frontend types
+const toFrontendConfig = (config: unknown): PromptConfig => {
+  const c = (config || {}) as Record<string, unknown>;
+  return {
+    temperature: (c.temperature as number) ?? DEFAULT_PROMPT_CONFIG.temperature,
+    top_p: (c.top_p as number) ?? DEFAULT_PROMPT_CONFIG.top_p,
+    frequency_penalty: (c.frequency_penalty as number) ?? DEFAULT_PROMPT_CONFIG.frequency_penalty,
+    presence_penalty: (c.presence_penalty as number) ?? DEFAULT_PROMPT_CONFIG.presence_penalty,
+    max_tokens: (c.max_tokens as number) ?? DEFAULT_PROMPT_CONFIG.max_tokens,
+    output_schema: c.output_schema as PromptConfig['output_schema'],
+    reasoning: c.reasoning as PromptConfig['reasoning'],
   };
-  // Expose cancel function via ref
-  if (cancelRef) {
-    cancelRef.current = () => clearTimeout(timeoutId);
-  }
-  return debouncedFn;
-}
+};
+
+const toFrontendMessages = (messages: unknown): PromptMessage[] => {
+  const msgs = (messages || []) as Array<{ role?: string; content?: string; id?: string }>;
+  return msgs.map((m, i) => ({
+    id: m.id || `msg-${Date.now()}-${i}`,
+    role: (m.role || 'user') as PromptMessage['role'],
+    content: m.content || '',
+  }));
+};
+
+// Type conversion from frontend to API (for saving)
+const toApiConfig = (config: PromptConfig): Record<string, unknown> => ({
+  temperature: config.temperature,
+  top_p: config.top_p,
+  frequency_penalty: config.frequency_penalty,
+  presence_penalty: config.presence_penalty,
+  max_tokens: config.max_tokens,
+  output_schema: config.output_schema,
+  reasoning: config.reasoning,
+});
+
+const toApiMessages = (messages: PromptMessage[]): Array<{ role: 'system' | 'user' | 'assistant'; content: string }> =>
+  messages.map((m) => ({ role: m.role, content: m.content }));
 
 export function PromptsPage() {
   const { showToast } = useToast();
   const { t } = useTranslation('prompts');
+  const { t: tEval } = useTranslation('evaluation');
   const { t: tCommon } = useTranslation('common');
 
   // Use global store for providers and models (shared across pages, with caching)
@@ -75,13 +94,15 @@ export function PromptsPage() {
     providers,
     models,
     fetchProvidersAndModels,
-    getEnabledProviders,
   } = useGlobalStore();
 
   const [prompts, setPrompts] = useState<Prompt[]>([]);
   const [selectedPrompt, setSelectedPrompt] = useState<Prompt | null>(null);
   const [versions, setVersions] = useState<PromptVersion[]>([]);
   const [showNewPrompt, setShowNewPrompt] = useState(false);
+  const [showSaveVersion, setShowSaveVersion] = useState(false);
+  const [versionNotes, setVersionNotes] = useState('');
+  const [versionNotesError, setVersionNotesError] = useState<string | null>(null);
   const [showVersions, setShowVersions] = useState(false);
   const [showCompare, setShowCompare] = useState(false);
   const [compareMode, setCompareMode] = useState<'models' | 'versions'>('models');
@@ -91,6 +112,8 @@ export function PromptsPage() {
   const [compareVersions, setCompareVersions] = useState<[string, string]>(['', '']);
   const [compareInput, setCompareInput] = useState('');
   const [compareFiles, setCompareFiles] = useState<FileAttachment[]>([]);
+  const [compareFileProcessing, setCompareFileProcessing] = useState<'auto' | 'vision' | 'ocr' | 'none'>('auto');
+  const [compareOcrProviderOverride, setCompareOcrProviderOverride] = useState<OcrProvider | ''>('');
   const [compareRunning, setCompareRunning] = useState<{ left: boolean; right: boolean }>({ left: false, right: false });
   const [compareResults, setCompareResults] = useState<{
     left: { content: string; thinking: string; latency: number; tokensIn: number; tokensOut: number; error?: string; isThinking?: boolean } | null;
@@ -112,16 +135,12 @@ export function PromptsPage() {
   const [promptVariables, setPromptVariables] = useState<PromptVariable[]>([]);
   const [variableValues, setVariableValues] = useState<Record<string, string>>({});
   const [testInput, setTestInput] = useState('');
-  const [testOutput, setTestOutput] = useState('');
   const [selectedModel, setSelectedModel] = useState('');
-  const [running, setRunning] = useState(false);
   const [saving, setSaving] = useState(false);
   const [newPromptName, setNewPromptName] = useState('');
   const [attachedFiles, setAttachedFiles] = useState<FileAttachment[]>([]);
   const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
-  const [renderMarkdown, setRenderMarkdown] = useState(true);
   const [activeTab, setActiveTab] = useState<TabType>('edit');
-  const [autoSaveStatus, setAutoSaveStatus] = useState<'saved' | 'saving' | 'unsaved' | 'error'>('saved');
   const [debugRuns, setDebugRuns] = useState<DebugRun[]>([]);
   const [selectedDebugRun, setSelectedDebugRun] = useState<DebugRun | null>(null);
   const [showDebugDetail, setShowDebugDetail] = useState<DebugRun | null>(null);
@@ -130,82 +149,18 @@ export function PromptsPage() {
   const [isOptimizing, setIsOptimizing] = useState(false);
   const [analysisResult, setAnalysisResult] = useState<PromptAnalysisResult | null>(null);
   const [optimizeModelId, setOptimizeModelId] = useState('');
-  const [thinkingContent, setThinkingContent] = useState('');
-  const [isThinking, setIsThinking] = useState(false);
   const [previewAttachment, setPreviewAttachment] = useState<FileAttachment | null>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
   const compareFileInputRef = useRef<HTMLInputElement>(null);
-  const cancelAutoSaveRef = useRef<(() => void) | null>(null);
-  const lastSyncedPromptIdRef = useRef<string | null>(null);
-  const isPromptSwitchingRef = useRef(false);
-  const runAbortControllerRef = useRef<AbortController | null>(null);
-
-  // Auto-save debounced function
-  const debouncedAutoSave = useMemo(
-    () =>
-      debounce(async (promptId: string, data: Partial<Prompt>) => {
-        // Validate that we're still on the same prompt before saving
-        if (lastSyncedPromptIdRef.current !== promptId || isPromptSwitchingRef.current) {
-          return;
-        }
-
-        setAutoSaveStatus('saving');
-        try {
-          const { error } = await getDatabase()
-            .from('prompts')
-            .update({
-              ...data,
-              updated_at: new Date().toISOString(),
-            })
-            .eq('id', promptId);
-
-          // Double-check we're still on the same prompt after async operation
-          if (lastSyncedPromptIdRef.current !== promptId) {
-            return;
-          }
-
-          if (error) {
-            setAutoSaveStatus('error');
-          } else {
-            setAutoSaveStatus('saved');
-            // Update prompts list and selectedPrompt to keep them in sync
-            setPrompts((prev) =>
-              prev.map((p) =>
-                p.id === promptId
-                  ? { ...p, ...data, updated_at: new Date().toISOString() }
-                  : p
-              )
-            );
-            setSelectedPrompt((prev) =>
-              prev && prev.id === promptId
-                ? { ...prev, ...data, updated_at: new Date().toISOString() }
-                : prev
-            );
-          }
-        } catch {
-          if (lastSyncedPromptIdRef.current === promptId) {
-            setAutoSaveStatus('error');
-          }
-        }
-      }, 2000, cancelAutoSaveRef),
-    []
-  );
 
   useEffect(() => {
     loadData();
-  }, []);
-
-  useEffect(() => {
-    return () => {
-      runAbortControllerRef.current?.abort();
-    };
   }, []);
 
   // Set default model when models are loaded
   useEffect(() => {
     if (models.length > 0 && !selectedModel) {
       const enabledModels = models.filter((m) => {
-        const provider = providers.find((p) => p.id === m.provider_id);
+        const provider = providers.find((p) => p.id === m.providerId);
         return provider?.enabled;
       });
       if (enabledModels.length > 0) {
@@ -217,215 +172,204 @@ export function PromptsPage() {
 
   useEffect(() => {
     if (selectedPrompt) {
-      // Mark that we're switching prompts - block auto-save
-      isPromptSwitchingRef.current = true;
-
-      // Cancel any pending auto-save from the previous prompt
-      if (cancelAutoSaveRef.current) {
-        cancelAutoSaveRef.current();
-      }
-
       // Reset prompt content and configuration
-      setPromptContent(selectedPrompt.content);
+      setPromptContent(selectedPrompt.content || '');
       setPromptName(selectedPrompt.name);
-      setPromptMessages(selectedPrompt.messages || []);
-      setPromptConfig(selectedPrompt.config || DEFAULT_PROMPT_CONFIG);
+      setPromptMessages(toFrontendMessages(selectedPrompt.messages));
+      setPromptConfig(toFrontendConfig(selectedPrompt.config));
       setPromptVariables(selectedPrompt.variables || []);
-      if (selectedPrompt.default_model_id) {
-        setSelectedModel(selectedPrompt.default_model_id);
+      if (selectedPrompt.defaultModelId) {
+        setSelectedModel(selectedPrompt.defaultModelId);
       }
       loadVersions(selectedPrompt.id);
-      setAutoSaveStatus('saved');
 
       // Reset test & output states - each prompt should have independent test data
       setVariableValues({});
       setTestInput('');
-      setTestOutput('');
       setAttachedFiles([]);
       setDebugRuns([]);
       setSelectedDebugRun(null);
       setShowDebugDetail(null);
-      setThinkingContent('');
-      setIsThinking(false);
-
-      // Use setTimeout to ensure state updates are processed before allowing auto-save
-      // This runs after React has batched and applied all the setState calls above
-      setTimeout(() => {
-        lastSyncedPromptIdRef.current = selectedPrompt.id;
-        isPromptSwitchingRef.current = false;
-      }, 0);
-    } else {
-      // Clear the refs when no prompt is selected
-      lastSyncedPromptIdRef.current = null;
-      isPromptSwitchingRef.current = false;
     }
   }, [selectedPrompt]);
 
-  // Auto-save when content changes
-  useEffect(() => {
-    // Skip auto-save if:
-    // 1. No selected prompt
-    // 2. Currently saving
-    // 3. Currently switching prompts (state not yet synced)
-    // 4. The synced prompt ID doesn't match (safety check)
-    if (
-      !selectedPrompt ||
-      autoSaveStatus === 'saving' ||
-      isPromptSwitchingRef.current ||
-      lastSyncedPromptIdRef.current !== selectedPrompt.id
-    ) {
-      return;
-    }
+  const hasUnsavedChanges = useMemo(() => {
+    if (!selectedPrompt) return false;
 
-    const hasChanges =
-      promptContent !== selectedPrompt.content ||
+    const selectedConfig = toFrontendConfig(selectedPrompt.config);
+
+    const selectedMessages = toApiMessages(toFrontendMessages(selectedPrompt.messages));
+    const currentMessages = toApiMessages(promptMessages);
+    const messagesChanged = JSON.stringify(currentMessages) !== JSON.stringify(selectedMessages);
+
+    // In multi-message mode, ignore promptContent diffs because content is derived from messages.
+    const isMultiMessage = currentMessages.length > 0 || selectedMessages.length > 0;
+    const contentChanged = isMultiMessage ? false : promptContent !== (selectedPrompt.content || '');
+
+    return (
       promptName !== selectedPrompt.name ||
-      JSON.stringify(promptMessages) !== JSON.stringify(selectedPrompt.messages || []) ||
-      JSON.stringify(promptConfig) !== JSON.stringify(selectedPrompt.config || DEFAULT_PROMPT_CONFIG) ||
-      JSON.stringify(promptVariables) !== JSON.stringify(selectedPrompt.variables || []);
-
-    if (hasChanges) {
-      setAutoSaveStatus('unsaved');
-      debouncedAutoSave(selectedPrompt.id, {
-        content: promptContent,
-        name: promptName,
-        messages: promptMessages,
-        config: promptConfig,
-        variables: promptVariables,
-      });
-    }
-  }, [promptContent, promptName, promptMessages, promptConfig, promptVariables, selectedPrompt, debouncedAutoSave, autoSaveStatus]);
+      contentChanged ||
+      messagesChanged ||
+      JSON.stringify(promptConfig) !== JSON.stringify(selectedConfig) ||
+      JSON.stringify(promptVariables) !== JSON.stringify(selectedPrompt.variables || []) ||
+      (selectedModel || '') !== (selectedPrompt.defaultModelId || '')
+    );
+  }, [promptConfig, promptContent, promptMessages, promptName, promptVariables, selectedModel, selectedPrompt]);
 
   const loadData = async () => {
-    // 检查数据库是否已配置
-    if (!isDatabaseConfigured()) {
-      return;
-    }
-
     try {
       // Load providers and models from global store (with caching)
       await fetchProvidersAndModels();
 
       // Load prompts
-      const { data: promptsData } = await getDatabase()
-        .from('prompts')
-        .select('*')
-        .order('order_index')
-        .order('updated_at', { ascending: false });
-
+      const promptsData = await promptsApi.list();
       if (promptsData) {
-        setPrompts(promptsData);
-        if (promptsData.length > 0) {
-          setSelectedPrompt(promptsData[0]);
+        // Sort by orderIndex then by updatedAt (descending)
+        const sorted = [...promptsData].sort((a, b) => {
+          const orderDiff = (a.orderIndex || 0) - (b.orderIndex || 0);
+          if (orderDiff !== 0) return orderDiff;
+          return new Date(b.updatedAt || 0).getTime() - new Date(a.updatedAt || 0).getTime();
+        });
+        setPrompts(sorted as Prompt[]);
+        if (sorted.length > 0) {
+          // Fetch full prompt details for the first one
+          const fullPrompt = await promptsApi.getById(sorted[0].id);
+          setSelectedPrompt(fullPrompt);
         }
       }
-    } catch {
-      showToast('error', t('configureDbFirst'));
+    } catch (err) {
+      console.error('Failed to load prompts data:', err);
+
+      if (err instanceof TypeError) {
+        showToast('error', t('backendUnavailable'));
+        return;
+      }
+
+      if (err instanceof ApiError) {
+        showToast('error', `${t('loadFailed')}: ${err.message}`);
+        return;
+      }
+
+      if (err instanceof Error) {
+        showToast('error', `${t('loadFailed')}: ${err.message}`);
+        return;
+      }
+
+      showToast('error', t('loadFailed'));
     }
   };
 
   const loadVersions = async (promptId: string) => {
-    const { data } = await getDatabase()
-      .from('prompt_versions')
-      .select('*')
-      .eq('prompt_id', promptId)
-      .order('version', { ascending: false });
-    if (data) setVersions(data);
+    try {
+      const data = await promptsApi.getVersions(promptId);
+      setVersions(data);
+    } catch {
+      setVersions([]);
+    }
   };
 
   const handleCreatePrompt = async () => {
     if (!newPromptName.trim()) return;
     try {
-      const maxOrder = prompts.reduce((max, p) => Math.max(max, p.order_index || 0), 0);
-      const { data, error } = await getDatabase()
-        .from('prompts')
-        .insert({
-          name: newPromptName.trim(),
-          description: '',
-          content: '',
-          variables: [],
-          messages: [],
-          config: DEFAULT_PROMPT_CONFIG,
-          current_version: 1,
-          order_index: maxOrder + 1,
-        })
-        .select()
-        .single();
+      const data = await promptsApi.create({
+        name: newPromptName.trim(),
+        description: '',
+        content: '',
+        variables: [],
+        messages: [],
+        config: toApiConfig(DEFAULT_PROMPT_CONFIG),
+      });
 
-      if (error) {
-        showToast('error', t('createFailed') + ': ' + error.message);
-        return;
-      }
-
-      if (data) {
-        setPrompts((prev) => [data, ...prev]);
-        setSelectedPrompt(data);
-        setNewPromptName('');
-        setShowNewPrompt(false);
-        showToast('success', t('promptCreated'));
-      }
-    } catch {
-      showToast('error', t('createPromptFailed'));
+      setPrompts((prev) => [data as Prompt, ...prev]);
+      setSelectedPrompt(data as Prompt);
+      invalidatePromptsCache(data);
+      setNewPromptName('');
+      setShowNewPrompt(false);
+      showToast('success', t('promptCreated'));
+    } catch (e) {
+      showToast('error', t('createFailed') + ': ' + (e instanceof Error ? e.message : 'Unknown error'));
     }
   };
 
-  const handleSave = async () => {
-    if (!selectedPrompt) return;
+  const handleSave = async (commitMessage: string): Promise<boolean> => {
+    if (!selectedPrompt) return false;
+
+    const hasContent =
+      promptMessages.length > 0
+        ? promptMessages.some((m) => m.content.trim().length > 0)
+        : promptContent.trim().length > 0;
+
+    if (!hasContent) {
+      showToast('error', t('writePromptFirst'));
+      return false;
+    }
+
     setSaving(true);
     try {
-      const newVersion = selectedPrompt.current_version + 1;
+      const contentToSave =
+        promptMessages.length > 0 ? JSON.stringify(toApiMessages(promptMessages)) : promptContent;
 
-      await getDatabase().from('prompt_versions').insert({
-        prompt_id: selectedPrompt.id,
-        version: newVersion,
-        content: promptMessages.length > 0 ? JSON.stringify(promptMessages) : promptContent,
-        commit_message: `Version ${newVersion}`,
+      // Create new version
+      const createdVersion = await promptsApi.createVersion(selectedPrompt.id, {
+        content: contentToSave,
+        commitMessage,
+        variables: promptVariables,
+        messages: toApiMessages(promptMessages),
+        config: toApiConfig(promptConfig),
+        defaultModelId: selectedModel || null,
       });
 
-      const { error } = await getDatabase()
-        .from('prompts')
-        .update({
-          name: promptName,
-          content: promptContent,
-          messages: promptMessages,
-          config: promptConfig,
-          variables: promptVariables,
-          current_version: newVersion,
-          default_model_id: selectedModel || null,
-          updated_at: new Date().toISOString(),
-        })
-        .eq('id', selectedPrompt.id);
-
-      if (error) {
-        showToast('error', t('saveFailed') + ': ' + error.message);
-        return;
-      }
-
-      const updated = {
-        ...selectedPrompt,
+      // Update prompt
+      const updatedPrompt = await promptsApi.update(selectedPrompt.id, {
         name: promptName,
         content: promptContent,
-        messages: promptMessages,
-        config: promptConfig,
+        messages: toApiMessages(promptMessages),
+        config: toApiConfig(promptConfig),
         variables: promptVariables,
-        current_version: newVersion,
-        default_model_id: selectedModel || null,
-        updated_at: new Date().toISOString(),
-      };
-      setSelectedPrompt(updated);
+        defaultModelId: selectedModel || undefined,
+      });
+
+      setSelectedPrompt(updatedPrompt as Prompt);
       setPrompts((prev) =>
-        prev.map((p) => (p.id === selectedPrompt.id ? updated : p))
+        prev.map((p) => (p.id === selectedPrompt.id ? updatedPrompt as Prompt : p))
       );
       loadVersions(selectedPrompt.id);
-      setAutoSaveStatus('saved');
-      showToast('success', t('savedVersion', { version: newVersion }));
+      showToast('success', t('savedVersion', { version: createdVersion.version }));
 
       // 通知其他页面刷新 prompts 缓存
-      invalidatePromptsCache(updated);
-    } catch {
-      showToast('error', t('saveFailed'));
+      invalidatePromptsCache(updatedPrompt);
+      return true;
+    } catch (e) {
+      showToast('error', t('saveFailed') + ': ' + (e instanceof Error ? e.message : 'Unknown error'));
+      return false;
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleConfirmSaveVersion = async () => {
+    const hasContent =
+      promptMessages.length > 0
+        ? promptMessages.some((m) => m.content.trim().length > 0)
+        : promptContent.trim().length > 0;
+
+    if (!hasContent) {
+      showToast('error', t('writePromptFirst'));
+      setShowSaveVersion(false);
+      return;
+    }
+
+    const commitMessage = versionNotes.trim();
+    if (!commitMessage) {
+      setVersionNotesError(t('versionNotesRequired'));
+      return;
+    }
+
+    setVersionNotesError(null);
+    const saved = await handleSave(commitMessage);
+    if (saved) {
+      setShowSaveVersion(false);
+      setVersionNotes('');
     }
   };
 
@@ -437,272 +381,55 @@ export function PromptsPage() {
     return promptContent;
   }, [promptMessages, promptContent]);
 
-  // Replace variables in prompt
-  const replaceVariables = useCallback((prompt: string, values: Record<string, string>) => {
-    let result = prompt;
-    for (const [key, value] of Object.entries(values)) {
-      result = result.replace(new RegExp(`\\{\\{\\s*${key}\\s*\\}\\}`, 'g'), value);
-    }
-    // Also replace variables from promptVariables with their default values if not provided
-    for (const variable of promptVariables) {
-      if (!values[variable.name] && variable.default_value) {
-        result = result.replace(new RegExp(`\\{\\{\\s*${variable.name}\\s*\\}\\}`, 'g'), variable.default_value);
-      }
-    }
-    return result;
-  }, [promptVariables]);
-
-  const handleStopRun = () => {
-    runAbortControllerRef.current?.abort();
-  };
-
-  const handleRun = async () => {
-    let finalPrompt = buildPromptFromMessages();
-    if (!finalPrompt) {
-      showToast('error', t('writePromptFirst'));
-      return;
-    }
-
-    // Replace variables
-    finalPrompt = replaceVariables(finalPrompt, variableValues);
-
-    const model = models.find((m) => m.id === selectedModel);
-    const provider = providers.find((p) => p.id === model?.provider_id);
-
-    if (!model || !provider) {
-      showToast('error', t('configureModelProviderFirst'));
-      return;
-    }
-
-    runAbortControllerRef.current?.abort();
-    const runAbortController = new AbortController();
-    runAbortControllerRef.current = runAbortController;
-
-    setRunning(true);
-    setTestOutput('');
-    setThinkingContent('');
-    setIsThinking(false);
-
-    const runId = `run_${Date.now()}`;
-    const startTime = Date.now();
-    let thinkingStartTime = 0;
-
-    try {
-      // Build options with parameters and response format
-      const options: AICallOptions = {
-        parameters: {
-          temperature: promptConfig.temperature,
-          top_p: promptConfig.top_p,
-          max_tokens: promptConfig.max_tokens,
-          frequency_penalty: promptConfig.frequency_penalty,
-          presence_penalty: promptConfig.presence_penalty,
-        },
-        signal: runAbortController.signal,
-      };
-
-      if (promptConfig.output_schema?.enabled) {
-        options.responseFormat = toResponseFormat(promptConfig.output_schema);
-      }
-
-      // 添加推理配置
-      if (promptConfig.reasoning?.enabled && promptConfig.reasoning?.effort !== 'default') {
-        options.reasoning = {
-          enabled: true,
-          effort: promptConfig.reasoning.effort,
-        };
-      }
-
-      let fullContent = '';
-      let accumulatedThinking = '';
-      let isCurrentlyThinking = false;  // 局部变量跟踪思考状态，避免闭包问题
-
-      await streamAIModel(
-        provider,
-        model.model_id,
-        finalPrompt,
-        {
-          onToken: (token) => {
-            fullContent += token;
-
-            // 收到正文内容时，结束思考状态
-            if (isCurrentlyThinking) {
-              isCurrentlyThinking = false;
-              flushSync(() => {
-                setIsThinking(false);
-              });
-            }
-
-            // 实时检测思考内容 (用于文本标签格式如 <think>)
-            const { thinking, content } = extractThinking(fullContent);
-
-            if (thinking && thinking !== accumulatedThinking) {
-              accumulatedThinking = thinking;
-              setThinkingContent(thinking);
-            }
-
-            // 显示去除思考标签后的内容 - 使用 flushSync 强制同步更新实现流式渲染
-            flushSync(() => {
-              setTestOutput(content);
-            });
-          },
-          onThinkingToken: (token) => {
-            // 流式思考内容 (用于 OpenRouter reasoning 字段)
-            if (!isCurrentlyThinking) {
-              isCurrentlyThinking = true;
-              thinkingStartTime = Date.now();
-              flushSync(() => {
-                setIsThinking(true);
-              });
-            }
-            accumulatedThinking += token;
-            flushSync(() => {
-              setThinkingContent(accumulatedThinking);
-            });
-          },
-          onComplete: async (finalContent, _thinking, usage) => {
-            runAbortControllerRef.current = null;
-            const latencyMs = Date.now() - startTime;
-
-            // Get token counts from usage
-            const tokensInput = usage?.tokensInput || 0;
-            const tokensOutput = usage?.tokensOutput || 0;
-
-            // 提取最终的思考内容
-            const { thinking, content } = extractThinking(finalContent);
-            setThinkingContent(thinking);
-            setIsThinking(false);
-
-            const outputText = `${content}\n\n---\n**${t('processingTime')}:** ${(latencyMs / 1000).toFixed(2)}s`;
-            setTestOutput(outputText);
-
-            // Add to debug history with attachments and thinking
-            const newRun: DebugRun = {
-              id: runId,
-              input: testInput,
-              inputVariables: {},
-              output: content,
-              status: 'success',
-              latencyMs,
-              tokensInput,
-              tokensOutput,
-              timestamp: new Date(),
-              attachments: attachedFiles.length > 0 ? [...attachedFiles] : undefined,
-              thinking: thinking || undefined,
-            };
-            setDebugRuns((prev) => [newRun, ...prev.slice(0, 19)]);
-
-            // Ensure setRunning(false) is always called
-            setRunning(false);
-            showToast('success', t('runComplete'));
-
-            // Save to database (non-blocking)
-            try {
-              await getDatabase().from('traces').insert({
-                prompt_id: selectedPrompt?.id,
-                model_id: model.id,
-                input: finalPrompt + (testInput ? `\n\n${t('userInput')}: ${testInput}` : ''),
-                output: finalContent,
-                tokens_input: tokensInput,
-                tokens_output: tokensOutput,
-                latency_ms: latencyMs,
-                status: 'success',
-                metadata: {
-                  test_input: testInput,
-                  files: attachedFiles.map((f) => ({ name: f.name, type: f.type })),
-                },
-                attachments: attachedFiles,
-              });
-            } catch (e) {
-              console.error('Failed to save trace:', e);
-            }
-          },
-          onAbort: () => {
-            runAbortControllerRef.current = null;
-            setIsThinking(false);
-            setRunning(false);
-            showToast('info', t('runStopped'));
-          },
-          onError: async (error) => {
-            runAbortControllerRef.current = null;
-            setTestOutput(`**[${t('error')}]**\n\n${error}\n\n${t('errorCheckList')}`);
-
-            // Add to debug history
-            const newRun: DebugRun = {
-              id: runId,
-              input: testInput,
-              inputVariables: {},
-              output: '',
-              status: 'error',
-              errorMessage: error,
-              latencyMs: Date.now() - startTime,
-              tokensInput: 0,
-              tokensOutput: 0,
-              timestamp: new Date(),
-            };
-            setDebugRuns((prev) => [newRun, ...prev.slice(0, 19)]);
-
-            // Ensure setRunning(false) is always called
-            setRunning(false);
-            showToast('error', t('runFailed') + ': ' + error);
-
-            // Save to database (non-blocking)
-            try {
-              await getDatabase().from('traces').insert({
-                prompt_id: selectedPrompt?.id,
-                model_id: model.id,
-                input: finalPrompt + (testInput ? `\n\n${t('userInput')}: ${testInput}` : ''),
-                output: error,
-                tokens_input: 0,
-                tokens_output: 0,
-                latency_ms: 0,
-                status: 'error',
-                metadata: { test_input: testInput, error },
-                attachments: attachedFiles,
-              });
-            } catch (e) {
-              console.error('Failed to save trace:', e);
-            }
-          },
-        },
-        testInput,
-        attachedFiles.length > 0 ? attachedFiles : undefined,
-        options
-      );
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : t('unknownError');
-      setTestOutput(`**[${t('error')}]**\n\n${errorMessage}\n\n${t('errorCheckList')}`);
-      setRunning(false);
-      showToast('error', t('runFailed') + ': ' + errorMessage);
-    }
-  };
-
   const handleDeletePrompt = async () => {
     if (!selectedPrompt) return;
     try {
-      const { error } = await getDatabase().from('prompts').delete().eq('id', selectedPrompt.id);
-      if (error) {
-        showToast('error', t('deleteFailed') + ': ' + error.message);
-        return;
-      }
+      await promptsApi.delete(selectedPrompt.id);
       const remaining = prompts.filter((p) => p.id !== selectedPrompt.id);
       setPrompts(remaining);
       setSelectedPrompt(remaining[0] || null);
       showToast('success', t('promptDeleted'));
-    } catch {
-      showToast('error', t('deleteFailed'));
+    } catch (e) {
+      showToast('error', t('deleteFailed') + ': ' + (e instanceof Error ? e.message : 'Unknown error'));
     }
   };
 
   const handleRestoreVersion = async (version: PromptVersion) => {
-    try {
-      const content = JSON.parse(version.content);
-      if (Array.isArray(content)) {
-        setPromptMessages(content);
-      } else {
-        setPromptContent(version.content);
+    // Restore snapshot fields when available
+    if (version.variables) {
+      setPromptVariables(version.variables as PromptVariable[]);
+    }
+    if (version.config) {
+      setPromptConfig(toFrontendConfig(version.config));
+    }
+    if (typeof version.defaultModelId !== 'undefined') {
+      setSelectedModel(version.defaultModelId || '');
+    }
+
+    const applyMessages = (messages: unknown) => {
+      setPromptMessages(toFrontendMessages(messages));
+      setPromptContent('');
+    };
+
+    const applyContent = (content: string) => {
+      setPromptMessages([]);
+      setPromptContent(content);
+    };
+
+    // Prefer explicit messages field; fallback to parsing content for legacy versions.
+    if (version.messages && version.messages.length > 0) {
+      applyMessages(version.messages);
+    } else {
+      try {
+        const parsed = JSON.parse(version.content) as unknown;
+        if (Array.isArray(parsed)) {
+          applyMessages(parsed);
+        } else {
+          applyContent(version.content);
+        }
+      } catch {
+        applyContent(version.content);
       }
-    } catch {
-      setPromptContent(version.content);
     }
     setShowVersions(false);
     showToast('info', t('restoredToVersion', { version: version.version }));
@@ -730,14 +457,13 @@ export function PromptsPage() {
 
     const updates = prompts.map((p, i) => ({
       id: p.id,
-      order_index: i,
+      orderIndex: i,
     }));
 
-    for (const update of updates) {
-      await getDatabase()
-        .from('prompts')
-        .update({ order_index: update.order_index })
-        .eq('id', update.id);
+    try {
+      await promptsApi.batchUpdateOrder(updates);
+    } catch (e) {
+      console.error('Failed to update order:', e);
     }
 
     setDraggedIndex(null);
@@ -781,14 +507,13 @@ export function PromptsPage() {
 
     try {
       const model = models.find((m) => m.id === optimizeModelId);
-      const provider = providers.find((p) => p.id === model?.provider_id);
 
-      if (!model || !provider) {
+      if (!model) {
         showToast('error', t('selectAnalyzeModelFirst'));
         return [];
       }
 
-      const result = await analyzePrompt(provider, model.model_id, {
+      const result = await analyzePrompt(model.id, {
         messages: promptMessages,
         content: promptContent,
         variables: promptVariables,
@@ -818,11 +543,6 @@ export function PromptsPage() {
     p.name.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
-  const enabledModels = models.filter((m) => {
-    const provider = providers.find((p) => p.id === m.provider_id);
-    return provider?.enabled;
-  });
-
   const getModelName = (modelId: string | null) => {
     if (!modelId) return null;
     return models.find((m) => m.id === modelId)?.name;
@@ -843,124 +563,27 @@ export function PromptsPage() {
     return date.toLocaleDateString('zh-CN');
   };
 
-  // 计算当前选中模型的文件上传能力
-  const fileUploadCapabilities = useMemo(() => {
-    const model = models.find((m) => m.id === selectedModel);
-    const provider = providers.find((p) => p.id === model?.provider_id);
-    if (!model || !provider) {
-      return { accept: '.txt,.md,.json,.csv,.xml,.yaml,.yml', canUploadImage: false, canUploadPdf: false, canUploadText: true };
-    }
-    return getFileUploadCapabilities(provider.type, model.model_id, model.supports_vision ?? true);
-  }, [selectedModel, models, providers]);
-
   // 计算比较功能的文件上传能力（取两个模型的交集）
   const compareFileUploadCapabilities = useMemo(() => {
-    const model1 = models.find((m) => m.id === compareModels[0]);
-    const model2 = models.find((m) => m.id === compareModels[1]);
-    const provider1 = providers.find((p) => p.id === model1?.provider_id);
-    const provider2 = providers.find((p) => p.id === model2?.provider_id);
+    return { accept: getFileInputAccept() };
+  }, []);
 
-    let canUploadImage = true;
-    let canUploadPdf = true;
-
-    if (model1 && provider1) {
-      const cap1 = getFileUploadCapabilities(provider1.type, model1.model_id, model1.supports_vision ?? true);
-      canUploadImage = canUploadImage && cap1.canUploadImage;
-      canUploadPdf = canUploadPdf && cap1.canUploadPdf;
-    }
-    if (model2 && provider2) {
-      const cap2 = getFileUploadCapabilities(provider2.type, model2.model_id, model2.supports_vision ?? true);
-      canUploadImage = canUploadImage && cap2.canUploadImage;
-      canUploadPdf = canUploadPdf && cap2.canUploadPdf;
+  const compareVisionEligible = useMemo(() => {
+    if (compareMode === 'models') {
+      const model1 = models.find((m) => m.id === compareModels[0]);
+      const model2 = models.find((m) => m.id === compareModels[1]);
+      return !!model1?.supportsVision && !!model2?.supportsVision;
     }
 
-    const acceptParts: string[] = [];
-    if (canUploadImage) acceptParts.push('image/*');
-    if (canUploadPdf) acceptParts.push('application/pdf');
+    const model = models.find((m) => m.id === compareModel);
+    return !!model?.supportsVision;
+  }, [compareMode, compareModels, compareModel, models]);
 
-    return {
-      accept: acceptParts.length > 0 ? acceptParts.join(',') : '',
-      canUploadImage,
-      canUploadPdf,
-    };
-  }, [compareModels, models, providers]);
-
-  const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
-    if (!files || files.length === 0) return;
-
-    const maxSize = 20 * 1024 * 1024;
-    const model = models.find((m) => m.id === selectedModel);
-    const provider = providers.find((p) => p.id === model?.provider_id);
-
-    for (const file of Array.from(files)) {
-      if (file.size > maxSize) {
-        showToast('error', t('fileTooLarge', { name: file.name }));
-        continue;
-      }
-
-      // 使用新的文件类型验证
-      if (!isSupportedFileType(file)) {
-        showToast('error', t('unsupportedFileType', { name: file.name }));
-        continue;
-      }
-
-      // 根据当前模型能力检查是否允许上传
-      if (model && provider && !isFileTypeAllowed(file, provider.type, model.model_id, model.supports_vision ?? true)) {
-        const isImage = file.type.startsWith('image/');
-        const isPdf = file.type === 'application/pdf';
-        if (isImage) {
-          showToast('error', t('imageNotSupported'));
-        } else if (isPdf) {
-          showToast('error', t('pdfNotSupported'));
-        }
-        continue;
-      }
-
-      try {
-        const attachment = await fileToBase64(file);
-        setAttachedFiles((prev) => [...prev, attachment]);
-      } catch {
-        showToast('error', t('fileReadFailed', { name: file.name }));
-      }
+  useEffect(() => {
+    if (compareFileProcessing === 'vision' && !compareVisionEligible) {
+      setCompareFileProcessing('auto');
     }
-
-    if (fileInputRef.current) {
-      fileInputRef.current.value = '';
-    }
-  };
-
-  const handlePaste = async (e: React.ClipboardEvent) => {
-    const items = e.clipboardData.items;
-    for (const item of Array.from(items)) {
-      if (item.type.startsWith('image/')) {
-        // 检查当前模型是否支持图片
-        if (!fileUploadCapabilities.canUploadImage) {
-          showToast('error', t('imageNotSupported'));
-          return;
-        }
-        e.preventDefault();
-        const file = item.getAsFile();
-        if (file) {
-          if (file.size > 20 * 1024 * 1024) {
-            showToast('error', t('imageTooLarge'));
-            continue;
-          }
-          try {
-            const attachment = await fileToBase64(file);
-            setAttachedFiles((prev) => [...prev, attachment]);
-            showToast('success', t('imageAdded'));
-          } catch {
-            showToast('error', t('cannotReadImage'));
-          }
-        }
-      }
-    }
-  };
-
-  const removeFile = (index: number) => {
-    setAttachedFiles((prev) => prev.filter((_, i) => i !== index));
-  };
+  }, [compareFileProcessing, compareVisionEligible]);
 
   const getFileIcon = (type: string) => {
     if (type.startsWith('image/')) return Image;
@@ -1011,8 +634,6 @@ export function PromptsPage() {
     let rightPrompt = '';
     let leftModel: typeof models[0] | undefined;
     let rightModel: typeof models[0] | undefined;
-    let leftProvider: typeof providers[0] | undefined;
-    let rightProvider: typeof providers[0] | undefined;
 
     if (compareMode === 'models') {
       const version = versions.find((v) => v.id === compareVersion);
@@ -1022,8 +643,6 @@ export function PromptsPage() {
       rightPrompt = version.content;
       leftModel = models.find((m) => m.id === compareModels[0]);
       rightModel = models.find((m) => m.id === compareModels[1]);
-      leftProvider = providers.find((p) => p.id === leftModel?.provider_id);
-      rightProvider = providers.find((p) => p.id === rightModel?.provider_id);
     } else {
       const version1 = versions.find((v) => v.id === compareVersions[0]);
       const version2 = versions.find((v) => v.id === compareVersions[1]);
@@ -1032,16 +651,32 @@ export function PromptsPage() {
       leftPrompt = version1.content;
       rightPrompt = version2.content;
       const model = models.find((m) => m.id === compareModel);
-      const provider = providers.find((p) => p.id === model?.provider_id);
       leftModel = rightModel = model;
-      leftProvider = rightProvider = provider;
     }
 
-    if (!leftModel || !rightModel || !leftProvider || !rightProvider) {
+    if (!leftModel || !rightModel) {
       showToast('error', t('modelConfigError'));
       setCompareRunning({ left: false, right: false });
       return;
     }
+
+    // Build user content with attachments
+    const buildUserContent = (prompt: string): string | ContentPart[] => {
+      const fullPrompt = compareInput ? `${prompt}\n\n${compareInput}` : prompt;
+      if (compareFiles.length > 0) {
+        const contentParts: ContentPart[] = [
+          { type: 'text' as const, text: fullPrompt }
+        ];
+        for (const file of compareFiles) {
+          contentParts.push({
+            type: 'file_ref' as const,
+            file_ref: { fileId: file.fileId },
+          });
+        }
+        return contentParts;
+      }
+      return fullPrompt;
+    };
 
     // 运行左侧
     const runLeft = async () => {
@@ -1052,22 +687,29 @@ export function PromptsPage() {
       let tokensOut = 0;
 
       try {
-        await streamAIModel(
-          leftProvider!,
-          leftModel!.model_id,
-          leftPrompt,
+        await chatApi.streamWithCallbacks(
+          {
+            modelId: leftModel!.id,
+            messages: [{ role: 'user', content: buildUserContent(leftPrompt) }],
+            temperature: compareParams.left.temperature,
+            top_p: compareParams.left.top_p,
+            max_tokens: compareParams.left.max_tokens,
+            frequency_penalty: compareParams.left.frequency_penalty,
+            presence_penalty: compareParams.left.presence_penalty,
+            reasoning: compareParams.left.reasoning,
+            saveTrace: false,
+            fileProcessing: compareFileProcessing,
+            ocrProvider: compareOcrProviderOverride || undefined,
+          },
           {
             onToken: (token) => {
               fullContent += token;
 
-              // 收到正文内容时，结束思考状态
               if (isCurrentlyThinking) {
                 isCurrentlyThinking = false;
               }
 
-              // 实时检测思考内容 (用于文本标签格式如 <think>)
               const { thinking, content } = extractThinking(fullContent);
-
               if (thinking && thinking !== accumulatedThinking) {
                 accumulatedThinking = thinking;
               }
@@ -1080,7 +722,6 @@ export function PromptsPage() {
               });
             },
             onThinkingToken: (token) => {
-              // 流式思考内容 (用于 OpenRouter reasoning 字段)
               if (!isCurrentlyThinking) {
                 isCurrentlyThinking = true;
               }
@@ -1092,23 +733,20 @@ export function PromptsPage() {
                 }));
               });
             },
-            onComplete: (_finalContent, _thinkingContent, usage) => {
-              if (usage) {
-                tokensIn = usage.tokensInput;
-                tokensOut = usage.tokensOutput;
-              }
-              // 提取最终的思考内容
-              const { thinking, content } = extractThinking(fullContent);
+            onComplete: (result) => {
+              tokensIn = result.usage?.prompt_tokens || 0;
+              tokensOut = result.usage?.completion_tokens || 0;
+              const { thinking, content } = extractThinking(result.content);
               setCompareResults((prev) => ({
                 ...prev,
-                left: { content, thinking: thinking || accumulatedThinking, latency: Date.now() - startTimeLeft, tokensIn, tokensOut },
+                left: { content, thinking: result.thinking || thinking || accumulatedThinking, latency: Date.now() - startTimeLeft, tokensIn, tokensOut },
               }));
               setCompareRunning((prev) => ({ ...prev, left: false }));
             },
             onError: (error) => {
               setCompareResults((prev) => ({
                 ...prev,
-                left: { content: '', thinking: '', latency: 0, tokensIn: 0, tokensOut: 0, error },
+                left: { content: '', thinking: '', latency: 0, tokensIn: 0, tokensOut: 0, error: error.message },
               }));
               setCompareRunning((prev) => ({ ...prev, left: false }));
             },
@@ -1120,19 +758,7 @@ export function PromptsPage() {
               setCompareRunning((prev) => ({ ...prev, left: false }));
             },
           },
-          compareInput || undefined,
-          compareFiles.length > 0 ? compareFiles : undefined,
-          {
-            parameters: {
-              temperature: compareParams.left.temperature,
-              top_p: compareParams.left.top_p,
-              max_tokens: compareParams.left.max_tokens,
-              frequency_penalty: compareParams.left.frequency_penalty,
-              presence_penalty: compareParams.left.presence_penalty,
-            },
-            reasoning: compareParams.left.reasoning,
-            signal: leftController.signal,
-          }
+          leftController.signal
         );
       } catch (error) {
         if (error instanceof Error && error.name !== 'AbortError') {
@@ -1154,22 +780,29 @@ export function PromptsPage() {
       let tokensOut = 0;
 
       try {
-        await streamAIModel(
-          rightProvider!,
-          rightModel!.model_id,
-          rightPrompt,
+        await chatApi.streamWithCallbacks(
+          {
+            modelId: rightModel!.id,
+            messages: [{ role: 'user', content: buildUserContent(rightPrompt) }],
+            temperature: compareParams.right.temperature,
+            top_p: compareParams.right.top_p,
+            max_tokens: compareParams.right.max_tokens,
+            frequency_penalty: compareParams.right.frequency_penalty,
+            presence_penalty: compareParams.right.presence_penalty,
+            reasoning: compareParams.right.reasoning,
+            saveTrace: false,
+            fileProcessing: compareFileProcessing,
+            ocrProvider: compareOcrProviderOverride || undefined,
+          },
           {
             onToken: (token) => {
               fullContent += token;
 
-              // 收到正文内容时，结束思考状态
               if (isCurrentlyThinking) {
                 isCurrentlyThinking = false;
               }
 
-              // 实时检测思考内容 (用于文本标签格式如 <think>)
               const { thinking, content } = extractThinking(fullContent);
-
               if (thinking && thinking !== accumulatedThinking) {
                 accumulatedThinking = thinking;
               }
@@ -1182,7 +815,6 @@ export function PromptsPage() {
               });
             },
             onThinkingToken: (token) => {
-              // 流式思考内容 (用于 OpenRouter reasoning 字段)
               if (!isCurrentlyThinking) {
                 isCurrentlyThinking = true;
               }
@@ -1194,23 +826,20 @@ export function PromptsPage() {
                 }));
               });
             },
-            onComplete: (_finalContent, _thinkingContent, usage) => {
-              if (usage) {
-                tokensIn = usage.tokensInput;
-                tokensOut = usage.tokensOutput;
-              }
-              // 提取最终的思考内容
-              const { thinking, content } = extractThinking(fullContent);
+            onComplete: (result) => {
+              tokensIn = result.usage?.prompt_tokens || 0;
+              tokensOut = result.usage?.completion_tokens || 0;
+              const { thinking, content } = extractThinking(result.content);
               setCompareResults((prev) => ({
                 ...prev,
-                right: { content, thinking: thinking || accumulatedThinking, latency: Date.now() - startTimeRight, tokensIn, tokensOut },
+                right: { content, thinking: result.thinking || thinking || accumulatedThinking, latency: Date.now() - startTimeRight, tokensIn, tokensOut },
               }));
               setCompareRunning((prev) => ({ ...prev, right: false }));
             },
             onError: (error) => {
               setCompareResults((prev) => ({
                 ...prev,
-                right: { content: '', thinking: '', latency: 0, tokensIn: 0, tokensOut: 0, error },
+                right: { content: '', thinking: '', latency: 0, tokensIn: 0, tokensOut: 0, error: error.message },
               }));
               setCompareRunning((prev) => ({ ...prev, right: false }));
             },
@@ -1222,19 +851,7 @@ export function PromptsPage() {
               setCompareRunning((prev) => ({ ...prev, right: false }));
             },
           },
-          compareInput || undefined,
-          compareFiles.length > 0 ? compareFiles : undefined,
-          {
-            parameters: {
-              temperature: compareParams.right.temperature,
-              top_p: compareParams.right.top_p,
-              max_tokens: compareParams.right.max_tokens,
-              frequency_penalty: compareParams.right.frequency_penalty,
-              presence_penalty: compareParams.right.presence_penalty,
-            },
-            reasoning: compareParams.right.reasoning,
-            signal: rightController.signal,
-          }
+          rightController.signal
         );
       } catch (error) {
         if (error instanceof Error && error.name !== 'AbortError') {
@@ -1257,56 +874,27 @@ export function PromptsPage() {
 
     const maxSize = 20 * 1024 * 1024;
 
-    // 获取两个比较模型的能力，取交集
-    const model1 = models.find((m) => m.id === compareModels[0]);
-    const model2 = models.find((m) => m.id === compareModels[1]);
-    const provider1 = providers.find((p) => p.id === model1?.provider_id);
-    const provider2 = providers.find((p) => p.id === model2?.provider_id);
-
-    // 计算两个模型共同支持的能力
-    let canUploadImage = true;
-    let canUploadPdf = true;
-
-    if (model1 && provider1) {
-      const cap1 = getFileUploadCapabilities(provider1.type, model1.model_id, model1.supports_vision ?? true);
-      canUploadImage = canUploadImage && cap1.canUploadImage;
-      canUploadPdf = canUploadPdf && cap1.canUploadPdf;
-    }
-    if (model2 && provider2) {
-      const cap2 = getFileUploadCapabilities(provider2.type, model2.model_id, model2.supports_vision ?? true);
-      canUploadImage = canUploadImage && cap2.canUploadImage;
-      canUploadPdf = canUploadPdf && cap2.canUploadPdf;
-    }
-
     for (const file of Array.from(files)) {
       if (file.size > maxSize) {
         showToast('error', t('fileTooLarge', { name: file.name }));
         continue;
       }
 
-      const isImage = file.type.startsWith('image/');
-      const isPdf = file.type === 'application/pdf';
-
-      // 检查文件类型是否被支持
-      if (isImage && !canUploadImage) {
-        showToast('error', t('modelsNotSupportImage'));
-        continue;
-      }
-      if (isPdf && !canUploadPdf) {
-        showToast('error', t('modelsNotSupportPdf'));
-        continue;
-      }
-      if (!isImage && !isPdf) {
+      if (!isSupportedFileType(file)) {
         showToast('error', t('unsupportedFileType', { name: file.name }));
         continue;
       }
 
       try {
-        const attachment = await fileToBase64(file);
+        const attachment = await uploadFileAttachment(file);
         setCompareFiles((prev) => [...prev, attachment]);
       } catch {
         showToast('error', t('fileReadFailed', { name: file.name }));
       }
+    }
+
+    if (compareFileInputRef.current) {
+      compareFileInputRef.current.value = '';
     }
   };
 
@@ -1319,39 +907,6 @@ export function PromptsPage() {
     { id: 'observe' as TabType, label: t('tabHistory'), icon: <Eye className="w-4 h-4" /> },
     { id: 'optimize' as TabType, label: t('tabOptimize'), icon: <Sparkles className="w-4 h-4" /> },
   ];
-
-  const renderAutoSaveStatus = () => {
-    switch (autoSaveStatus) {
-      case 'saved':
-        return (
-          <span className="flex items-center gap-1 text-xs text-green-400 light:text-green-600">
-            <Check className="w-3 h-3" />
-            {t('saved')}
-          </span>
-        );
-      case 'saving':
-        return (
-          <span className="flex items-center gap-1 text-xs text-cyan-400 light:text-cyan-600">
-            <Cloud className="w-3 h-3 animate-pulse" />
-            {t('saving')}
-          </span>
-        );
-      case 'unsaved':
-        return (
-          <span className="flex items-center gap-1 text-xs text-amber-400 light:text-amber-600">
-            <CloudOff className="w-3 h-3" />
-            {t('unsaved')}
-          </span>
-        );
-      case 'error':
-        return (
-          <span className="flex items-center gap-1 text-xs text-red-400 light:text-red-600">
-            <CloudOff className="w-3 h-3" />
-            {t('saveFailed')}
-          </span>
-        );
-    }
-  };
 
   return (
     <div className="h-full flex overflow-hidden bg-slate-950 light:bg-slate-50">
@@ -1376,7 +931,7 @@ export function PromptsPage() {
 
         <div className="flex-1 overflow-y-auto p-2 space-y-1">
           {filteredPrompts.map((prompt, index) => {
-            const modelName = getModelName(prompt.default_model_id);
+            const modelName = getModelName(prompt.defaultModelId);
             return (
               <div
                 key={prompt.id}
@@ -1398,11 +953,11 @@ export function PromptsPage() {
                     {prompt.name}
                   </p>
                   <div className="flex items-center gap-2 mt-1 flex-wrap">
-                    <span className="text-xs text-slate-500 light:text-slate-600">v{prompt.current_version}</span>
+                    <span className="text-xs text-slate-500 light:text-slate-600">v{prompt.currentVersion}</span>
                     <span className="text-xs text-slate-600 light:text-slate-400">|</span>
                     <span className="text-xs text-slate-500 light:text-slate-600 flex items-center gap-1">
                       <Clock className="w-3 h-3" />
-                      {formatRelativeTime(prompt.updated_at)}
+                      {formatRelativeTime(prompt.updatedAt)}
                     </span>
                   </div>
                   {modelName && (
@@ -1431,8 +986,30 @@ export function PromptsPage() {
                   onChange={(e) => setPromptName(e.target.value)}
                   className="text-lg font-medium text-white light:text-slate-900 bg-transparent border-none focus:outline-none"
                 />
-                <Badge variant="info">v{selectedPrompt.current_version}</Badge>
-                {renderAutoSaveStatus()}
+                <Badge variant="info">v{selectedPrompt.currentVersion}</Badge>
+                {hasUnsavedChanges && <Badge variant="warning">{t('unsaved')}</Badge>}
+                <button
+                  onClick={async () => {
+                    const newValue = !selectedPrompt.isPublic;
+                    try {
+                      await promptsApi.update(selectedPrompt.id, { isPublic: newValue });
+                      setSelectedPrompt({ ...selectedPrompt, isPublic: newValue });
+                      setPrompts((prev) => prev.map((p) => p.id === selectedPrompt.id ? { ...p, isPublic: newValue } : p));
+                      showToast('success', newValue ? t('promptPublic') : t('promptPrivate'));
+                    } catch {
+                      showToast('error', t('updateFailed'));
+                    }
+                  }}
+                  className={`flex items-center gap-1 px-2 py-1 rounded text-xs transition-colors ${
+                    selectedPrompt.isPublic
+                      ? 'bg-green-500/20 text-green-400 hover:bg-green-500/30'
+                      : 'bg-slate-700 text-slate-400 hover:bg-slate-600 light:bg-slate-200 light:text-slate-500 light:hover:bg-slate-300'
+                  }`}
+                  title={selectedPrompt.isPublic ? t('clickToPrivate') : t('clickToPublic')}
+                >
+                  <Globe className="w-3 h-3" />
+                  {selectedPrompt.isPublic ? t('public') : t('private')}
+                </button>
               </div>
               <div className="flex items-center gap-2">
                 <Button variant="ghost" size="sm" onClick={() => setShowCompare(true)}>
@@ -1443,7 +1020,26 @@ export function PromptsPage() {
                   <History className="w-4 h-4" />
                   <span>{t('history')}</span>
                 </Button>
-                <Button variant="secondary" size="sm" onClick={handleSave} loading={saving}>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => {
+                    const hasContent =
+                      promptMessages.length > 0
+                        ? promptMessages.some((m) => m.content.trim().length > 0)
+                        : promptContent.trim().length > 0;
+
+                    if (!hasContent) {
+                      showToast('error', t('writePromptFirst'));
+                      return;
+                    }
+
+                    setVersionNotes('');
+                    setVersionNotesError(null);
+                    setShowSaveVersion(true);
+                  }}
+                  loading={saving}
+                >
                   <Save className="w-4 h-4" />
                   <span>{t('submitNewVersion')}</span>
                 </Button>
@@ -1532,7 +1128,7 @@ export function PromptsPage() {
                       <ParameterPanel
                         config={promptConfig}
                         onChange={setPromptConfig}
-                        modelId={models.find(m => m.id === selectedModel)?.model_id}
+                        modelId={models.find(m => m.id === selectedModel)?.modelId}
                       />
 
                       {/* Variable editor */}
@@ -1545,7 +1141,6 @@ export function PromptsPage() {
                       <StructuredOutputEditor
                         schema={promptConfig.output_schema}
                         onChange={(schema) => setPromptConfig({ ...promptConfig, output_schema: schema })}
-                        disabled={running}
                       />
 
                       {/* Debug history */}
@@ -1563,189 +1158,44 @@ export function PromptsPage() {
                   </div>
 
                   {/* Right panel - Test & Output */}
-                  <div className="flex-1 flex flex-col bg-slate-900/20 light:bg-slate-100 overflow-hidden min-w-0 basis-0">
-                    <div className="flex-shrink-0 p-4 border-b border-slate-700 light:border-slate-200">
-                      <h3 className="text-sm font-medium text-slate-300 light:text-slate-700">{t('testAndOutput')}</h3>
-                    </div>
-                    <div className="flex-1 overflow-y-auto p-4 space-y-4">
-                      {/* Variable values input */}
-                      {promptVariables.length > 0 && (
-                        <div className="space-y-2">
-                          <label className="block text-sm font-medium text-slate-300 light:text-slate-700">
-                            {t('variableValues')}
-                          </label>
-                          <div className="space-y-2 p-3 bg-slate-800/50 light:bg-slate-50 rounded-lg border border-slate-700 light:border-slate-200">
-                            {promptVariables.map((variable) => (
-                              <div key={variable.name} className="flex items-center gap-2">
-                                <code className="text-xs text-amber-400 light:text-amber-600 font-mono min-w-[100px]">
-                                  {`{{${variable.name}}}`}
-                                  {variable.required && <span className="text-red-400">*</span>}
-                                </code>
-                                <input
-                                  type="text"
-                                  value={variableValues[variable.name] || ''}
-                                  onChange={(e) =>
-                                    setVariableValues((prev) => ({
-                                      ...prev,
-                                      [variable.name]: e.target.value,
-                                    }))
-                                  }
-                                  placeholder={variable.default_value || variable.description || t('inputValuePlaceholder')}
-                                  className="flex-1 px-2 py-1.5 bg-slate-800 light:bg-white border border-slate-600 light:border-slate-300 rounded text-sm text-slate-200 light:text-slate-800 placeholder-slate-500 focus:outline-none focus:border-cyan-500"
-                                />
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-
-                      {/* Test input */}
-                      <div className="space-y-1.5">
-                        <label className="block text-sm font-medium text-slate-300 light:text-slate-700">
-                          {t('testInput')}
-                        </label>
-                        <textarea
-                          value={testInput}
-                          onChange={(e) => setTestInput(e.target.value)}
-                          onPaste={handlePaste}
-                          placeholder={t("inputPlaceholder")}
-                          rows={4}
-                          className="w-full p-3 bg-slate-800 light:bg-white border border-slate-700 light:border-slate-300 rounded-lg text-sm text-slate-200 light:text-slate-800 placeholder-slate-500 light:placeholder-slate-400 resize-none focus:outline-none focus:border-cyan-500"
-                        />
-                      </div>
-
-                      {/* Attachments */}
-                      <div className="space-y-2">
-                        <div className="flex items-center justify-between">
-                          <label className="block text-sm font-medium text-slate-300 light:text-slate-700">
-                            {t('attachments')}
-                          </label>
-                          <button
-                            type="button"
-                            onClick={() => fileInputRef.current?.click()}
-                            className="flex items-center gap-1 text-xs text-cyan-400 hover:text-cyan-300 transition-colors"
-                          >
-                            <Paperclip className="w-3.5 h-3.5" />
-                            {t('addFile')}
-                          </button>
-                        </div>
-                        <input
-                          ref={fileInputRef}
-                          type="file"
-                          accept={fileUploadCapabilities.accept}
-                          multiple
-                          onChange={handleFileSelect}
-                          className="hidden"
-                        />
-                        {attachedFiles.length > 0 ? (
-                          <div className="space-y-1.5">
-                            {attachedFiles.map((file, index) => {
-                              const FileIcon = getFileIcon(file.type);
-                              return (
-                                <div
-                                  key={index}
-                                  className="flex items-center gap-2 p-2 bg-slate-800 light:bg-white border border-slate-700 light:border-slate-300 rounded-lg"
-                                >
-                                  <button
-                                    type="button"
-                                    onClick={() => setPreviewAttachment(file)}
-                                    className="flex-1 flex items-center gap-2 min-w-0 hover:text-cyan-400 light:hover:text-cyan-600 transition-colors"
-                                    title={t('clickToPreview')}
-                                  >
-                                    {file.type.startsWith('image/') ? (
-                                      <img
-                                        src={`data:${file.type};base64,${file.base64}`}
-                                        alt={file.name}
-                                        className="w-8 h-8 object-cover rounded flex-shrink-0"
-                                      />
-                                    ) : (
-                                      <FileIcon className="w-4 h-4 text-slate-400 flex-shrink-0" />
-                                    )}
-                                    <span className="text-xs text-slate-300 light:text-slate-700 truncate">
-                                      {file.name}
-                                    </span>
-                                    <Eye className="w-3 h-3 text-cyan-400 light:text-cyan-600 flex-shrink-0" />
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      removeFile(index);
-                                    }}
-                                    className="p-1 text-slate-500 hover:text-red-400 transition-colors flex-shrink-0"
-                                  >
-                                    <X className="w-3.5 h-3.5" />
-                                  </button>
-                                </div>
-                              );
-                            })}
-                          </div>
-                        ) : (
-                          <div className="p-2 border border-dashed border-slate-700 light:border-slate-300 rounded-lg text-center">
-                            <p className="text-xs text-slate-500 light:text-slate-600">
-                              {t('supportedFileTypes')}
-                            </p>
-                          </div>
-                        )}
-                      </div>
-
-                      {running ? (
-                        <Button className="w-full" variant="danger" onClick={handleStopRun}>
-                          <X className="w-4 h-4" />
-                          <span>{tCommon('stop')}</span>
-                        </Button>
-                      ) : (
-                        <Button className="w-full" onClick={handleRun}>
-                          <Play className="w-4 h-4" />
-                          <span>{t('run')}</span>
-                        </Button>
-                      )}
-
-                      {/* Thinking Block */}
-                      {(thinkingContent || isThinking) && (
-                        <ThinkingBlock
-                          content={thinkingContent}
-                          isStreaming={isThinking}
-                        />
-                      )}
-
-                      {/* Output */}
-                      <div className="space-y-2">
-                        <div className="flex items-center justify-between">
-                          <label className="block text-sm font-medium text-slate-300 light:text-slate-700">
-                            {t('outputResult')}
-                          </label>
-                          <button
-                            type="button"
-                            onClick={() => setRenderMarkdown(!renderMarkdown)}
-                            className={`text-xs px-2 py-1 rounded transition-colors ${
-                              renderMarkdown
-                                ? 'bg-cyan-500/20 text-cyan-400'
-                                : 'bg-slate-700 light:bg-slate-200 text-slate-400 light:text-slate-600 hover:text-slate-300 light:hover:text-slate-800'
-                            }`}
-                          >
-                            {renderMarkdown ? t('markdown') : t('plainText')}
-                          </button>
-                        </div>
-                        <div className="min-h-[300px] max-h-[500px] p-3 bg-slate-800/50 light:bg-white border border-slate-700 light:border-slate-300 rounded-lg text-sm text-slate-300 light:text-slate-700 overflow-y-auto">
-                          {testOutput ? (
-                            renderMarkdown ? (
-                              <MarkdownRenderer content={testOutput} />
-                            ) : (
-                              <pre className="whitespace-pre-wrap font-mono">{testOutput}</pre>
-                            )
-                          ) : running ? (
-                            <div className="flex items-center gap-2 text-slate-500 light:text-slate-600">
-                              <Loader2 className="w-4 h-4 animate-spin" />
-                              <span>{t('generating')}</span>
-                            </div>
-                          ) : (
-                            <span className="text-slate-500 light:text-slate-600">{t('clickRunToSeeResult')}</span>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                  </div>
+                  <PromptTestPanel
+                    models={models}
+                    providers={providers}
+                    selectedModelId={selectedModel}
+                    onModelSelect={setSelectedModel}
+                    variables={promptVariables}
+                    variableValues={variableValues}
+                    onVariableValuesChange={setVariableValues}
+                    testInput={testInput}
+                    onTestInputChange={setTestInput}
+                    promptText={buildPromptFromMessages()}
+                    config={promptConfig}
+                    outputSchema={promptConfig.output_schema}
+                    promptId={selectedPrompt?.id}
+                    saveTrace={true}
+                    showFileUpload={true}
+                    attachedFiles={attachedFiles}
+                    onAttachedFilesChange={setAttachedFiles}
+                    onRunComplete={(result) => {
+                      const runId = `run_${Date.now()}`;
+                      const newRun: DebugRun = {
+                        id: runId,
+                        input: result.input,
+                        inputVariables: {},
+                        output: result.output,
+                        status: result.status,
+                        errorMessage: result.errorMessage,
+                        latencyMs: result.latencyMs,
+                        tokensInput: result.tokensInput,
+                        tokensOutput: result.tokensOutput,
+                        timestamp: new Date(),
+                        attachments: result.attachments,
+                        thinking: result.thinking,
+                      };
+                      setDebugRuns((prev) => [newRun, ...prev.slice(0, 19)]);
+                    }}
+                    className="flex-1 min-w-0 basis-0 bg-slate-900/20 light:bg-slate-100"
+                  />
                 </>
               )}
 
@@ -1828,6 +1278,47 @@ export function PromptsPage() {
         </div>
       </Modal>
 
+      {/* Save Version Modal */}
+      <Modal
+        isOpen={showSaveVersion}
+        onClose={() => {
+          setShowSaveVersion(false);
+          setVersionNotesError(null);
+        }}
+        title={`${t('submitNewVersion')} (v${(selectedPrompt?.currentVersion ?? 0) + 1})`}
+      >
+        <div className="space-y-4">
+          <div className="space-y-1.5">
+            <label className="block text-sm font-medium text-slate-300 light:text-slate-700">
+              {t('versionNotes')}
+            </label>
+            <textarea
+              value={versionNotes}
+              onChange={(e) => setVersionNotes(e.target.value)}
+              placeholder={t('versionNotesPlaceholder')}
+              rows={4}
+              className={`w-full px-3 py-2 bg-slate-800 light:bg-white border rounded-lg text-sm text-slate-200 light:text-slate-800 placeholder-slate-500 light:placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-cyan-500/50 focus:border-cyan-500 transition-all ${
+                versionNotesError ? 'border-rose-500' : 'border-slate-700 light:border-slate-300'
+              }`}
+            />
+            {versionNotesError ? (
+              <p className="text-xs text-rose-500">{versionNotesError}</p>
+            ) : (
+              <p className="text-xs text-slate-500 light:text-slate-600">{t('versionNotesHint')}</p>
+            )}
+          </div>
+
+          <div className="flex justify-end gap-3">
+            <Button variant="ghost" onClick={() => setShowSaveVersion(false)} disabled={saving}>
+              {tCommon('cancel')}
+            </Button>
+            <Button onClick={handleConfirmSaveVersion} loading={saving}>
+              {t('submitNewVersion')}
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
       {/* Version History Modal */}
       <Modal
         isOpen={showVersions}
@@ -1849,12 +1340,21 @@ export function PromptsPage() {
                 </div>
                 <div>
                   <p className="text-sm font-medium text-slate-200 light:text-slate-800">
-                    {version.commit_message || `Version ${version.version}`}
+                    {tCommon('version')} {version.version}
                   </p>
                   <p className="text-xs text-slate-500 light:text-slate-600 flex items-center gap-1 mt-1">
                     <Clock className="w-3 h-3" />
-                    {new Date(version.created_at).toLocaleString('zh-CN')}
+                    {formatDateTime(version.createdAt)}
                   </p>
+                  {version.commitMessage ? (
+                    <p className="text-xs text-slate-400 light:text-slate-600 mt-2 whitespace-pre-wrap break-words">
+                      {version.commitMessage}
+                    </p>
+                  ) : (
+                    <p className="text-xs text-slate-500 light:text-slate-500 mt-2 italic">
+                      {t('noVersionNotes')}
+                    </p>
+                  )}
                 </div>
               </div>
               <Button variant="ghost" size="sm" onClick={() => handleRestoreVersion(version)}>
@@ -1912,7 +1412,7 @@ export function PromptsPage() {
                   { value: '', label: t('selectVersion') },
                   ...versions.map((v) => ({
                     value: v.id,
-                    label: `v${v.version} - ${new Date(v.created_at).toLocaleString('zh-CN')}`,
+                    label: `v${v.version} - ${formatDateTime(v.createdAt)}`,
                   })),
                 ]}
               />
@@ -1957,7 +1457,7 @@ export function PromptsPage() {
                     { value: '', label: t('selectVersion') },
                     ...versions.map((v) => ({
                       value: v.id,
-                      label: `v${v.version} - ${new Date(v.created_at).toLocaleString('zh-CN')}`,
+                      label: `v${v.version} - ${formatDateTime(v.createdAt)}`,
                     })),
                   ]}
                 />
@@ -1969,7 +1469,7 @@ export function PromptsPage() {
                     { value: '', label: t('selectVersion') },
                     ...versions.map((v) => ({
                       value: v.id,
-                      label: `v${v.version} - ${new Date(v.created_at).toLocaleString('zh-CN')}`,
+                      label: `v${v.version} - ${formatDateTime(v.createdAt)}`,
                     })),
                   ]}
                 />
@@ -1994,20 +1494,46 @@ export function PromptsPage() {
               <button
                 type="button"
                 onClick={() => compareFileInputRef.current?.click()}
-                className="flex items-center gap-1 text-xs text-cyan-400 hover:text-cyan-300 transition-colors"
+                className="flex items-center gap-1 text-xs transition-colors text-cyan-400 hover:text-cyan-300"
               >
                 <Paperclip className="w-3.5 h-3.5" />
                 {t('addFile')}
               </button>
             </div>
+            <div className="grid grid-cols-1 gap-2">
+              <Select
+                label={tEval('fileProcessing')}
+                value={compareFileProcessing}
+                onChange={(e) => setCompareFileProcessing(e.target.value as typeof compareFileProcessing)}
+                options={[
+                  { value: 'auto', label: tEval('fileProcessingAuto') },
+                  ...(compareVisionEligible ? [{ value: 'vision', label: tEval('fileProcessingVision') }] : []),
+                  { value: 'ocr', label: tEval('fileProcessingOcr') },
+                  { value: 'none', label: tEval('fileProcessingNone') },
+                ]}
+              />
+              {(compareFileProcessing === 'ocr' ||
+                (compareFileProcessing === 'auto' &&
+                  !compareVisionEligible &&
+                  (compareMode === 'models' ? (compareModels[0] || compareModels[1]) : !!compareModel))) && (
+                <Select
+                  value={compareOcrProviderOverride}
+                  onChange={(e) => setCompareOcrProviderOverride(e.target.value as OcrProvider | '')}
+                  options={[
+                    { value: '', label: tEval('ocrProviderFollow') },
+                    { value: 'paddle', label: 'PaddleOCR' },
+                    { value: 'datalab', label: tEval('ocrProviderDatalab') },
+                  ]}
+                />
+              )}
+            </div>
             <input
               ref={compareFileInputRef}
               type="file"
-              accept={compareFileUploadCapabilities.accept || 'image/*,application/pdf'}
+              accept={compareFileUploadCapabilities.accept}
               multiple
               onChange={handleCompareFileSelect}
               className="hidden"
-              disabled={!compareFileUploadCapabilities.canUploadImage && !compareFileUploadCapabilities.canUploadPdf}
             />
             {compareFiles.length > 0 && (
               <div className="flex flex-wrap gap-2">
@@ -2018,15 +1544,7 @@ export function PromptsPage() {
                       key={index}
                       className="flex items-center gap-2 p-2 bg-slate-800 light:bg-slate-100 border border-slate-700 light:border-slate-300 rounded-lg"
                     >
-                      {file.type.startsWith('image/') ? (
-                        <img
-                          src={`data:${file.type};base64,${file.base64}`}
-                          alt={file.name}
-                          className="w-8 h-8 object-cover rounded"
-                        />
-                      ) : (
-                        <FileIcon className="w-4 h-4 text-slate-400" />
-                      )}
+                      <FileIcon className="w-4 h-4 text-slate-400" />
                       <span className="text-xs text-slate-300 light:text-slate-700 truncate max-w-[120px]">
                         {file.name}
                       </span>
@@ -2119,8 +1637,8 @@ export function PromptsPage() {
                   {/* 推理配置 - 仅在模型支持时显示 */}
                   {(() => {
                     const leftModelId = compareMode === 'models'
-                      ? models.find((m) => m.id === compareModels[0])?.model_id
-                      : models.find((m) => m.id === selectedModel)?.model_id;
+                      ? models.find((m) => m.id === compareModels[0])?.modelId
+                      : models.find((m) => m.id === selectedModel)?.modelId;
                     return leftModelId && inferReasoningSupport(leftModelId) && (
                       <div className="flex items-center justify-between pt-2 border-t border-slate-600 light:border-slate-300">
                         <span className="text-xs text-slate-500">{t('reasoningEffort')}</span>
@@ -2210,8 +1728,8 @@ export function PromptsPage() {
                   {/* 推理配置 - 仅在模型支持时显示 */}
                   {(() => {
                     const rightModelId = compareMode === 'models'
-                      ? models.find((m) => m.id === compareModels[1])?.model_id
-                      : models.find((m) => m.id === selectedModel)?.model_id;
+                      ? models.find((m) => m.id === compareModels[1])?.modelId
+                      : models.find((m) => m.id === selectedModel)?.modelId;
                     return rightModelId && inferReasoningSupport(rightModelId) && (
                       <div className="flex items-center justify-between pt-2 border-t border-slate-600 light:border-slate-300">
                         <span className="text-xs text-slate-500">{t('reasoningEffort')}</span>

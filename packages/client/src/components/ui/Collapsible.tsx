@@ -20,9 +20,18 @@ export function Collapsible({
 
   return (
     <div className="border border-slate-700 light:border-slate-200 rounded-lg overflow-hidden">
-      <button
+      <div
+        role="button"
+        tabIndex={0}
+        aria-expanded={isOpen}
         onClick={() => setIsOpen(!isOpen)}
-        className="w-full flex items-center justify-between px-3 py-2.5 bg-slate-800/50 light:bg-slate-50 hover:bg-slate-800 light:hover:bg-slate-100 transition-colors"
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            setIsOpen((prev) => !prev);
+          }
+        }}
+        className="w-full flex items-center justify-between px-3 py-2.5 bg-slate-800/50 light:bg-slate-50 hover:bg-slate-800 light:hover:bg-slate-100 transition-colors cursor-pointer"
       >
         <div className="flex items-center gap-2">
           {isOpen ? (
@@ -40,7 +49,7 @@ export function Collapsible({
             {action}
           </div>
         )}
-      </button>
+      </div>
       {isOpen && (
         <div className="p-3 border-t border-slate-700 light:border-slate-200 bg-slate-900/30 light:bg-white">
           {children}

@@ -2,7 +2,6 @@ import { useState, useEffect, useRef, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   ArrowLeft,
-  ArrowRight,
   Wand2,
   FileText,
   Sparkles,
@@ -16,16 +15,18 @@ import {
   Save,
   Paperclip,
   X,
-  Image as ImageIcon,
   Settings2,
 } from 'lucide-react';
-import { Button, Input, useToast, MarkdownRenderer, ModelSelector } from '../components/ui';
+import { Button, Input, Select, useToast, MarkdownRenderer, ModelSelector } from '../components/ui';
 import { ThinkingBlock, AttachmentPreview, AttachmentModal, ParameterPanel } from '../components/Prompt';
-import { getDatabase, isDatabaseConfigured } from '../lib/database';
-import { streamAIModelWithMessages, fileToBase64, extractThinking, type ChatMessage as AIChatMessage, type FileAttachment } from '../lib/ai-service';
+import { providersApi, modelsApi } from '../api/providers';
+import { promptsApi } from '../api/prompts';
+import { ApiError } from '../api';
+import { chatApi, type StreamCallbacks, type ContentPart } from '../api/chat';
+import { uploadFileAttachment, extractThinking, type FileAttachment } from '../lib/ai-service';
+import { invalidatePromptsCache } from '../lib/cache-events';
 import { getFileInputAccept, isSupportedFileType } from '../lib/file-utils';
-import { getFileUploadCapabilities, isFileTypeAllowed } from '../lib/model-capabilities';
-import type { Model, Provider, PromptConfig } from '../types';
+import type { Model, Provider, PromptConfig, OcrProvider } from '../types';
 import { DEFAULT_PROMPT_CONFIG } from '../types/database';
 
 interface PromptWizardPageProps {
@@ -89,6 +90,7 @@ const DEFAULT_TEMPLATES: Template[] = [
 
 export function PromptWizardPage({ onNavigate }: PromptWizardPageProps) {
   const { t } = useTranslation('prompts');
+  const { t: tEval } = useTranslation('evaluation');
   const { t: tCommon } = useTranslation('common');
   const { showToast } = useToast();
   const [step, setStep] = useState<'template' | 'chat' | 'result'>('template');
@@ -108,6 +110,7 @@ export function PromptWizardPage({ onNavigate }: PromptWizardPageProps) {
   const [attachedFiles, setAttachedFiles] = useState<FileAttachment[]>([]);
   const [streamingThinking, setStreamingThinking] = useState('');
   const [isThinking, setIsThinking] = useState(false);
+  const [processingStage, setProcessingStage] = useState<'idle' | 'ocr' | 'llm'>('idle');
   const [previewAttachment, setPreviewAttachment] = useState<FileAttachment | null>(null);
   const [modelConfig, setModelConfig] = useState<PromptConfig>(DEFAULT_PROMPT_CONFIG);
   const [showParameterPanel, setShowParameterPanel] = useState(false);
@@ -140,49 +143,89 @@ export function PromptWizardPage({ onNavigate }: PromptWizardPageProps) {
   }, [showParameterPanel]);
 
   const loadModels = async () => {
-    // 检查数据库是否已配置
-    if (!isDatabaseConfigured()) {
-      return;
-    }
-
     try {
-      const db = getDatabase();
-      const [modelsRes, providersRes] = await Promise.all([
-        db.from('models').select('*'),
-        db.from('providers').select('*').eq('enabled', true),
+      const [modelsData, providersData] = await Promise.all([
+        modelsApi.list(),
+        providersApi.list(),
       ]);
 
-      if (modelsRes.data) setModels(modelsRes.data);
-      if (providersRes.data) {
-        setProviders(providersRes.data);
-        // Select first available model
-        if (modelsRes.data && modelsRes.data.length > 0) {
-          const enabledProviderIds = providersRes.data.map((p) => p.id);
-          const availableModel = modelsRes.data.find((m) => enabledProviderIds.includes(m.provider_id));
-          if (availableModel) {
-            setSelectedModelId(availableModel.id);
-          }
+      setModels(modelsData);
+      const enabledProviders = providersData.filter((p) => p.enabled);
+      setProviders(enabledProviders);
+
+      // Select first available model
+      if (modelsData.length > 0) {
+        const enabledProviderIds = enabledProviders.map((p) => p.id);
+        const availableModel = modelsData.find((m) => enabledProviderIds.includes(m.providerId));
+        if (availableModel) {
+          setSelectedModelId(availableModel.id);
         }
       }
-    } catch {
-      showToast('error', t('wizardConfigureDbFirst'));
+    } catch (err) {
+      console.error('Failed to load models:', err);
+
+      if (err instanceof TypeError) {
+        showToast('error', t('backendUnavailable'));
+        return;
+      }
+
+      if (err instanceof ApiError) {
+        showToast('error', `${t('loadFailed')}: ${err.message}`);
+        return;
+      }
+
+      if (err instanceof Error) {
+        showToast('error', `${t('loadFailed')}: ${err.message}`);
+        return;
+      }
+
+      showToast('error', t('loadFailed'));
     }
   };
 
   const getModelInfo = (modelId: string) => {
     const model = models.find((m) => m.id === modelId);
-    const provider = model ? providers.find((p) => p.id === model.provider_id) : null;
+    const provider = model ? providers.find((p) => p.id === model.providerId) : null;
     return { model, provider };
   };
 
   // 计算当前选中模型的文件上传能力
   const fileUploadCapabilities = useMemo(() => {
-    const { model, provider } = getModelInfo(selectedModelId);
-    if (!model || !provider) {
-      return { accept: '.txt,.md,.json,.csv,.xml,.yaml,.yml', canUploadImage: false, canUploadPdf: false, canUploadText: true };
+    return {
+      accept: getFileInputAccept(),
+      canUploadImage: true,
+      canUploadPdf: true,
+      canUploadText: true,
+    };
+  }, []);
+
+  const currentModel = useMemo(() => models.find((m) => m.id === selectedModelId) || null, [models, selectedModelId]);
+  const [fileProcessing, setFileProcessing] = useState<'auto' | 'vision' | 'ocr' | 'none'>('auto');
+  const [ocrProviderOverride, setOcrProviderOverride] = useState<OcrProvider | ''>('');
+
+  const resolvedFileMode = useMemo(() => {
+    if (fileProcessing === 'none') return 'none';
+    if (fileProcessing === 'vision') return 'vision';
+    if (fileProcessing === 'ocr') return 'ocr';
+    return currentModel?.supportsVision ? 'vision' : 'ocr';
+  }, [fileProcessing, currentModel?.supportsVision]);
+
+  const hasBinaryAttachments = useMemo(() => (
+    attachedFiles.some((file) => file.type.startsWith('image/') || file.type === 'application/pdf')
+  ), [attachedFiles]);
+
+  const willUseOcr = useMemo(() => (
+    attachedFiles.length > 0 && hasBinaryAttachments && resolvedFileMode === 'ocr'
+  ), [attachedFiles.length, hasBinaryAttachments, resolvedFileMode]);
+
+  const ocrActive = isLoading && processingStage === 'ocr';
+  const llmActive = isLoading && processingStage === 'llm';
+
+  useEffect(() => {
+    if (fileProcessing === 'vision' && currentModel && !currentModel.supportsVision) {
+      setFileProcessing('auto');
     }
-    return getFileUploadCapabilities(provider.type, model.model_id, model.supports_vision ?? true);
-  }, [selectedModelId, models, providers]);
+  }, [fileProcessing, currentModel?.supportsVision]);
 
   const handleSelectTemplate = (template: Template) => {
     setSelectedTemplate(template);
@@ -220,24 +263,60 @@ export function PromptWizardPage({ onNavigate }: PromptWizardPageProps) {
     setStreamingContent('');
     setStreamingThinking('');
     setIsThinking(false);
+    setProcessingStage('idle');
     setAttachedFiles([]);
 
     try {
       abortControllerRef.current?.abort();
-      const { model, provider } = getModelInfo(selectedModelId);
-      if (!model || !provider) {
+      const { model } = getModelInfo(selectedModelId);
+      if (!model) {
         showToast('error', t('wizardSelectModel'));
         setIsLoading(false);
         abortControllerRef.current = null;
         return;
       }
 
+      const resolveFileMode = (supportsVision: boolean): 'vision' | 'ocr' | 'none' => {
+        if (fileProcessing === 'none') return 'none';
+        if (fileProcessing === 'vision') return 'vision';
+        if (fileProcessing === 'ocr') return 'ocr';
+        return supportsVision ? 'vision' : 'ocr';
+      };
+
+      const effectiveMode = resolveFileMode(model.supportsVision ?? true);
+      const hasBinaryAttachments = currentFiles.some(
+        (file) => file.type.startsWith('image/') || file.type === 'application/pdf'
+      );
+      const runNeedsOcr = currentFiles.length > 0 && hasBinaryAttachments && effectiveMode === 'ocr';
+      setProcessingStage(runNeedsOcr ? 'ocr' : 'llm');
+
       const abortController = new AbortController();
       abortControllerRef.current = abortController;
 
-      const apiMessages: AIChatMessage[] = [
-        { role: 'system', content: t('wizardSystemPrompt') },
-        ...newMessages.map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content })),
+      // Build messages for chat API
+      const systemContent = t('wizardSystemPrompt');
+
+      // Build user message content with attachments
+      const lastMessage = newMessages[newMessages.length - 1];
+      let lastMessageContent: string | ContentPart[] = lastMessage.content;
+
+      if (currentFiles.length > 0) {
+        const contentParts: ContentPart[] = [
+          { type: 'text' as const, text: lastMessage.content }
+        ];
+        for (const file of currentFiles) {
+          contentParts.push({
+            type: 'file_ref' as const,
+            file_ref: { fileId: file.fileId },
+          });
+        }
+        lastMessageContent = contentParts;
+      }
+
+      const apiMessages = [
+        { role: 'system' as const, content: systemContent },
+        ...newMessages.slice(0, -1).map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content })),
+        { role: 'user' as const, content: lastMessageContent },
       ];
 
       let fullContent = '';
@@ -245,127 +324,129 @@ export function PromptWizardPage({ onNavigate }: PromptWizardPageProps) {
       let thinkingStartTime = 0;
       let thinkingDuration = 0;
 
-      await streamAIModelWithMessages(
-        provider,
-        model.model_id,
-        apiMessages,
-        {
-          onToken: (token) => {
-            fullContent += token;
+      const callbacks: StreamCallbacks = {
+        onToken: (token) => {
+          setProcessingStage((prev) => (prev === 'ocr' ? 'llm' : prev));
+          fullContent += token;
 
-            // 实时检测思考内容
-            const { thinking, content } = extractThinking(fullContent);
-            if (thinking && thinking !== accumulatedThinking) {
-              if (!isThinking) {
-                setIsThinking(true);
-              }
-              accumulatedThinking = thinking;
-              setStreamingThinking(thinking);
-            }
-
-            // 显示去除思考标签后的内容
-            setStreamingContent(content);
-
-            // Auto scroll
-            if (chatContainerRef.current) {
-              chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
-            }
-          },
-          onThinkingToken: (token) => {
+          // 实时检测思考内容
+          const { thinking, content } = extractThinking(fullContent);
+          if (thinking && thinking !== accumulatedThinking) {
             if (!isThinking) {
               setIsThinking(true);
-              thinkingStartTime = Date.now();
             }
-            accumulatedThinking += token;
-            setStreamingThinking(accumulatedThinking);
-          },
-          onComplete: (finalContent) => {
-            abortControllerRef.current = null;
-            // 计算思考时间
-            if (thinkingStartTime > 0) {
-              thinkingDuration = Date.now() - thinkingStartTime;
-            }
+            accumulatedThinking = thinking;
+            setStreamingThinking(thinking);
+          }
 
-            // 提取最终的思考内容
-            const { thinking, content } = extractThinking(finalContent);
+          // 显示去除思考标签后的内容
+          setStreamingContent(content);
 
+          // Auto scroll
+          if (chatContainerRef.current) {
+            chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
+          }
+        },
+        onThinkingToken: (token) => {
+          if (!isThinking) {
+            setIsThinking(true);
+            thinkingStartTime = Date.now();
+          }
+          accumulatedThinking += token;
+          setStreamingThinking(accumulatedThinking);
+        },
+        onComplete: (result) => {
+          abortControllerRef.current = null;
+          // 计算思考时间
+          if (thinkingStartTime > 0) {
+            thinkingDuration = Date.now() - thinkingStartTime;
+          }
+
+          // 提取最终的思考内容
+          const { thinking, content } = extractThinking(result.content);
+
+          const assistantMessage: ChatMessage = {
+            role: 'assistant',
+            content: content,
+            thinking: result.thinking || thinking || accumulatedThinking || undefined,
+            thinkingDurationMs: (result.thinking || thinking || accumulatedThinking) ? thinkingDuration : undefined,
+          };
+          setMessages([...newMessages, assistantMessage]);
+          setStreamingContent('');
+          setStreamingThinking('');
+          setIsThinking(false);
+          setIsLoading(false);
+          setProcessingStage('idle');
+
+          // Check if prompt was generated
+          const promptMatch = content.match(/---PROMPT_START---\n?([\s\S]*?)\n?---PROMPT_END---/);
+          if (promptMatch) {
+            setGeneratedPrompt(promptMatch[1].trim());
+            setIsPromptPreviewOpen(true);
+          }
+        },
+        onAbort: () => {
+          abortControllerRef.current = null;
+
+          // 计算思考时间
+          if (thinkingStartTime > 0) {
+            thinkingDuration = Date.now() - thinkingStartTime;
+          }
+
+          const { thinking, content } = extractThinking(fullContent);
+          const finalThinking = thinking || accumulatedThinking || undefined;
+
+          if (content || finalThinking) {
             const assistantMessage: ChatMessage = {
               role: 'assistant',
-              content: content,
-              thinking: thinking || accumulatedThinking || undefined,
-              thinkingDurationMs: (thinking || accumulatedThinking) ? thinkingDuration : undefined,
+              content,
+              thinking: finalThinking,
+              thinkingDurationMs: finalThinking ? thinkingDuration : undefined,
             };
             setMessages([...newMessages, assistantMessage]);
-            setStreamingContent('');
-            setStreamingThinking('');
-            setIsThinking(false);
-            setIsLoading(false);
 
-            // Check if prompt was generated
             const promptMatch = content.match(/---PROMPT_START---\n?([\s\S]*?)\n?---PROMPT_END---/);
             if (promptMatch) {
               setGeneratedPrompt(promptMatch[1].trim());
               setIsPromptPreviewOpen(true);
             }
-          },
-          onAbort: () => {
-            abortControllerRef.current = null;
+          }
 
-            // 璁＄畻鎬濊€冩椂闂?
-            if (thinkingStartTime > 0) {
-              thinkingDuration = Date.now() - thinkingStartTime;
-            }
-
-            const { thinking, content } = extractThinking(fullContent);
-            const finalThinking = thinking || accumulatedThinking || undefined;
-
-            if (content || finalThinking) {
-              const assistantMessage: ChatMessage = {
-                role: 'assistant',
-                content,
-                thinking: finalThinking,
-                thinkingDurationMs: finalThinking ? thinkingDuration : undefined,
-              };
-              setMessages([...newMessages, assistantMessage]);
-
-              const promptMatch = content.match(/---PROMPT_START---\n?([\s\S]*?)\n?---PROMPT_END---/);
-              if (promptMatch) {
-                setGeneratedPrompt(promptMatch[1].trim());
-                setIsPromptPreviewOpen(true);
-              }
-            }
-
-            setStreamingContent('');
-            setStreamingThinking('');
-            setIsThinking(false);
-            setIsLoading(false);
-          },
-          onError: (error) => {
-            abortControllerRef.current = null;
-            showToast('error', error);
-            setIsLoading(false);
-            setStreamingContent('');
-            setStreamingThinking('');
-            setIsThinking(false);
-          },
+          setStreamingContent('');
+          setStreamingThinking('');
+          setIsThinking(false);
+          setIsLoading(false);
+          setProcessingStage('idle');
         },
-        currentFiles.length > 0 ? currentFiles : undefined,
+        onError: (error) => {
+          abortControllerRef.current = null;
+          showToast('error', error.message);
+          setIsLoading(false);
+          setStreamingContent('');
+          setStreamingThinking('');
+          setIsThinking(false);
+          setProcessingStage('idle');
+        },
+      };
+
+      await chatApi.streamWithCallbacks(
         {
-          parameters: {
-            temperature: modelConfig.temperature,
-            top_p: modelConfig.top_p,
-            max_tokens: modelConfig.max_tokens,
-            frequency_penalty: modelConfig.frequency_penalty,
-            presence_penalty: modelConfig.presence_penalty,
-          },
+          modelId: model.id,
+          messages: apiMessages,
+          temperature: modelConfig.temperature,
+          top_p: modelConfig.top_p,
+          max_tokens: modelConfig.max_tokens,
+          frequency_penalty: modelConfig.frequency_penalty,
+          presence_penalty: modelConfig.presence_penalty,
           reasoning: modelConfig.reasoning?.enabled
-            ? {
-                enabled: true,
-                effort: modelConfig.reasoning.effort,
-              }
+            ? { enabled: true, effort: modelConfig.reasoning.effort }
             : undefined,
-          signal: abortController.signal,
-        }
+          saveTrace: false,
+          fileProcessing,
+          ocrProvider: ocrProviderOverride || undefined,
+        },
+        callbacks,
+        abortController.signal
       );
     } catch (e) {
       abortControllerRef.current = null;
@@ -374,6 +455,7 @@ export function PromptWizardPage({ onNavigate }: PromptWizardPageProps) {
       setStreamingContent('');
       setStreamingThinking('');
       setIsThinking(false);
+      setProcessingStage('idle');
     }
   };
 
@@ -396,10 +478,8 @@ export function PromptWizardPage({ onNavigate }: PromptWizardPageProps) {
     const files = e.target.files;
     if (!files) return;
 
-    const { model, provider } = getModelInfo(selectedModelId);
-
     for (const file of Array.from(files)) {
-      if (file.size > 10 * 1024 * 1024) {
+      if (file.size > 20 * 1024 * 1024) {
         showToast('error', t('wizardFileTooLarge', { name: file.name }));
         continue;
       }
@@ -408,20 +488,8 @@ export function PromptWizardPage({ onNavigate }: PromptWizardPageProps) {
         continue;
       }
 
-      // 根据当前模型能力检查是否允许上传
-      if (model && provider && !isFileTypeAllowed(file, provider.type, model.model_id, model.supports_vision ?? true)) {
-        const isImage = file.type.startsWith('image/');
-        const isPdf = file.type === 'application/pdf';
-        if (isImage) {
-          showToast('error', t('imageNotSupported'));
-        } else if (isPdf) {
-          showToast('error', t('pdfNotSupported'));
-        }
-        continue;
-      }
-
       try {
-        const attachment = await fileToBase64(file);
+        const attachment = await uploadFileAttachment(file);
         setAttachedFiles((prev) => [...prev, attachment]);
       } catch {
         showToast('error', t('wizardCannotReadFile', { name: file.name }));
@@ -436,16 +504,15 @@ export function PromptWizardPage({ onNavigate }: PromptWizardPageProps) {
     const items = e.clipboardData.items;
     for (const item of Array.from(items)) {
       if (item.type.startsWith('image/')) {
-        // 检查当前模型是否支持图片
-        if (!fileUploadCapabilities.canUploadImage) {
-          showToast('error', t('imageNotSupported'));
-          return;
-        }
         e.preventDefault();
         const file = item.getAsFile();
         if (file) {
           try {
-            const attachment = await fileToBase64(file);
+            if (file.size > 20 * 1024 * 1024) {
+              showToast('error', t('wizardFileTooLarge', { name: file.name }));
+              continue;
+            }
+            const attachment = await uploadFileAttachment(file);
             setAttachedFiles((prev) => [...prev, attachment]);
           } catch {
             showToast('error', t('wizardCannotReadPastedImage'));
@@ -477,32 +544,22 @@ export function PromptWizardPage({ onNavigate }: PromptWizardPageProps) {
 
     setIsSaving(true);
     try {
-      const { data, error } = await getDatabase()
-        .from('prompts')
-        .insert({
-          name: promptName,
-          description: `通过向导创建，基于模板: ${selectedTemplate?.name || '自定义'}`,
-          content: generatedPrompt,
-          variables: [],
-          messages: [],
-          config: {
-            temperature: 1,
-            top_p: 0.7,
-            frequency_penalty: 0,
-            presence_penalty: 0,
-            max_tokens: 4096,
-          },
-          current_version: 1,
-          order_index: 0,
-        })
-        .select()
-        .single();
+      const createdPrompt = await promptsApi.create({
+        name: promptName,
+        description: `通过向导创建，基于模板: ${selectedTemplate?.nameKey ? t(selectedTemplate.nameKey) : '自定义'}`,
+        content: generatedPrompt,
+        variables: [],
+        messages: [],
+        config: {
+          temperature: 1,
+          top_p: 0.7,
+          frequency_penalty: 0,
+          presence_penalty: 0,
+          max_tokens: 4096,
+        },
+      });
 
-      if (error) {
-        showToast('error', t('wizardSaveFailed'));
-        return;
-      }
-
+      invalidatePromptsCache(createdPrompt);
       showToast('success', t('wizardPromptSaved'));
       onNavigate('prompts');
     } catch (e) {
@@ -513,7 +570,7 @@ export function PromptWizardPage({ onNavigate }: PromptWizardPageProps) {
   };
 
   const availableModels = models.filter((m) => {
-    const provider = providers.find((p) => p.id === m.provider_id);
+    const provider = providers.find((p) => p.id === m.providerId);
     return provider?.enabled;
   });
 
@@ -667,19 +724,11 @@ export function PromptWizardPage({ onNavigate }: PromptWizardPageProps) {
                                 className="cursor-pointer hover:opacity-80 transition-opacity"
                                 onClick={() => setPreviewAttachment(file)}
                               >
-                                {file.type.startsWith('image/') ? (
-                                  <img
-                                    src={`data:${file.type};base64,${file.base64}`}
-                                    alt={file.name}
-                                    className="max-w-[200px] max-h-[150px] rounded-lg object-cover"
-                                  />
-                                ) : (
-                                  <AttachmentPreview
-                                    attachment={file}
-                                    size="lg"
-                                    showName
-                                  />
-                                )}
+                                <AttachmentPreview
+                                  attachment={file}
+                                  size="lg"
+                                  showName
+                                />
                               </div>
                             ))}
                           </div>
@@ -729,8 +778,11 @@ export function PromptWizardPage({ onNavigate }: PromptWizardPageProps) {
                   <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-cyan-500 to-teal-500 flex items-center justify-center flex-shrink-0">
                     <Bot className="w-4 h-4 text-white" />
                   </div>
-                  <div className="p-4 rounded-xl bg-slate-800 light:bg-slate-100 border border-slate-700 light:border-slate-200">
+                  <div className="p-4 rounded-xl bg-slate-800 light:bg-slate-100 border border-slate-700 light:border-slate-200 flex items-center gap-2 text-slate-400 light:text-slate-600">
                     <Loader2 className="w-5 h-5 animate-spin text-cyan-400" />
+                    <span className="text-sm">
+                      {processingStage === 'ocr' ? `${tEval('fileProcessingOcr')}...` : t('generating')}
+                    </span>
                   </div>
                 </div>
               )}
@@ -848,8 +900,33 @@ export function PromptWizardPage({ onNavigate }: PromptWizardPageProps) {
                         onChange={setModelConfig}
                         disabled={isLoading}
                         defaultOpen={true}
-                        modelId={models.find(m => m.id === selectedModelId)?.model_id}
+                        modelId={models.find(m => m.id === selectedModelId)?.modelId}
                       />
+                      <div className="mt-3 pt-3 border-t border-slate-700 light:border-slate-200 space-y-2">
+                        <Select
+                          label={tEval('fileProcessing')}
+                          value={fileProcessing}
+                          onChange={(e) => setFileProcessing(e.target.value as typeof fileProcessing)}
+                          options={[
+                            { value: 'auto', label: tEval('fileProcessingAuto') },
+                            ...(currentModel?.supportsVision ? [{ value: 'vision', label: tEval('fileProcessingVision') }] : []),
+                            { value: 'ocr', label: tEval('fileProcessingOcr') },
+                            { value: 'none', label: tEval('fileProcessingNone') },
+                          ]}
+                        />
+                        {(fileProcessing === 'ocr' ||
+                          ((fileProcessing || 'auto') === 'auto' && currentModel && !currentModel.supportsVision)) && (
+                          <Select
+                            value={ocrProviderOverride}
+                            onChange={(e) => setOcrProviderOverride(e.target.value as OcrProvider | '')}
+                            options={[
+                              { value: '', label: tEval('ocrProviderFollow') },
+                              { value: 'paddle', label: 'PaddleOCR' },
+                              { value: 'datalab', label: tEval('ocrProviderDatalab') },
+                            ]}
+                          />
+                        )}
+                      </div>
                     </div>
                   )}
                 </div>
@@ -857,28 +934,43 @@ export function PromptWizardPage({ onNavigate }: PromptWizardPageProps) {
 
               {/* Attached Files Preview */}
               {attachedFiles.length > 0 && (
-                <div className="flex flex-wrap gap-2">
-                  {attachedFiles.map((file, index) => (
-                    <div
-                      key={index}
-                      className="relative group flex items-center gap-2 px-2 py-1.5 bg-slate-800 light:bg-slate-100 rounded-lg border border-slate-600 light:border-slate-300"
-                    >
-                      <AttachmentPreview
-                        attachment={file}
-                        size="sm"
-                        onClick={() => setPreviewAttachment(file)}
-                      />
-                      <span className="text-xs text-slate-400 light:text-slate-600 max-w-[100px] truncate">
-                        {file.name}
-                      </span>
-                      <button
-                        onClick={() => removeAttachment(index)}
-                        className="p-0.5 rounded hover:bg-slate-700 light:hover:bg-slate-200 text-slate-500 hover:text-red-400"
+                <div className="space-y-1">
+                  <div className="flex flex-wrap gap-2">
+                    {attachedFiles.map((file, index) => (
+                      <div
+                        key={index}
+                        className="relative group flex items-center gap-2 px-2 py-1.5 bg-slate-800 light:bg-slate-100 rounded-lg border border-slate-600 light:border-slate-300"
                       >
-                        <X className="w-3 h-3" />
-                      </button>
-                    </div>
-                  ))}
+                        <AttachmentPreview
+                          attachment={file}
+                          size="sm"
+                          onClick={() => setPreviewAttachment(file)}
+                        />
+                        <span className="text-xs text-slate-400 light:text-slate-600 max-w-[100px] truncate">
+                          {file.name}
+                        </span>
+                        <button
+                          onClick={() => removeAttachment(index)}
+                          className="p-0.5 rounded hover:bg-slate-700 light:hover:bg-slate-200 text-slate-500 hover:text-red-400"
+                        >
+                          <X className="w-3 h-3" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="flex items-center gap-2 text-xs text-slate-500 light:text-slate-600">
+                    {resolvedFileMode === 'none' ? (
+                      <span>{tEval('fileProcessingNone')}</span>
+                    ) : willUseOcr ? (
+                      <>
+                        <span className={ocrActive ? 'text-cyan-400' : ''}>OCR</span>
+                        <span>→</span>
+                        <span className={llmActive ? 'text-cyan-400' : ''}>LLM</span>
+                      </>
+                    ) : (
+                      <span className={llmActive ? 'text-cyan-400' : ''}>LLM</span>
+                    )}
+                  </div>
                 </div>
               )}
 
@@ -895,7 +987,7 @@ export function PromptWizardPage({ onNavigate }: PromptWizardPageProps) {
                 <div className="flex items-end gap-2 p-3 bg-slate-800 light:bg-white border border-slate-600 light:border-slate-300 rounded-xl focus-within:ring-2 focus-within:ring-cyan-500/50 focus-within:border-cyan-500">
                   <button
                     onClick={() => fileInputRef.current?.click()}
-                    className="p-2 rounded-lg text-slate-400 light:text-slate-500 hover:text-cyan-400 light:hover:text-cyan-600 hover:bg-slate-700 light:hover:bg-slate-100 transition-colors"
+                    className="p-2 rounded-lg transition-colors text-slate-400 light:text-slate-500 hover:text-cyan-400 light:hover:text-cyan-600 hover:bg-slate-700 light:hover:bg-slate-100"
                     title={t('wizardUploadFile')}
                   >
                     <Paperclip className="w-5 h-5" />

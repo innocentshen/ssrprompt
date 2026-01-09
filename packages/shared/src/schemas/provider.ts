@@ -6,7 +6,8 @@ export const ProviderTypeSchema = z.enum(['openai', 'anthropic', 'gemini', 'cust
 export const CreateProviderSchema = z.object({
   name: z.string().min(1, 'Name is required'),
   type: ProviderTypeSchema,
-  apiKey: z.string().min(1, 'API Key is required'),
+  // Allow creating a provider without an API key (UI creates the provider first, then saves the key later).
+  apiKey: z.string().optional().default(''),
   baseUrl: z.string().url().optional(),
   enabled: z.boolean().optional().default(false),
 });
@@ -24,7 +25,8 @@ export const CreateModelSchema = z.object({
   modelId: z.string().min(1, 'Model ID is required'),
   name: z.string().min(1, 'Name is required'),
   capabilities: z.array(z.string()).optional().default([]),
-  supportsVision: z.boolean().optional().default(true),
+  maxContextLength: z.number().int().min(256).optional().default(8000),
+  supportsVision: z.boolean().optional().default(false),
   supportsReasoning: z.boolean().optional().default(false),
   supportsFunctionCalling: z.boolean().optional().default(false),
 });
@@ -32,12 +34,21 @@ export const CreateModelSchema = z.object({
 export const UpdateModelSchema = z.object({
   name: z.string().min(1).optional(),
   capabilities: z.array(z.string()).optional(),
+  maxContextLength: z.number().int().min(256).optional(),
   supportsVision: z.boolean().optional(),
   supportsReasoning: z.boolean().optional(),
   supportsFunctionCalling: z.boolean().optional(),
+});
+
+// Test Connection Schema
+export const TestConnectionSchema = z.object({
+  type: ProviderTypeSchema,
+  apiKey: z.string().min(1, 'API Key is required'),
+  baseUrl: z.string().url().nullable().optional(),
 });
 
 export type CreateProviderInput = z.infer<typeof CreateProviderSchema>;
 export type UpdateProviderInput = z.infer<typeof UpdateProviderSchema>;
 export type CreateModelInput = z.infer<typeof CreateModelSchema>;
 export type UpdateModelInput = z.infer<typeof UpdateModelSchema>;
+export type TestConnectionInput = z.infer<typeof TestConnectionSchema>;

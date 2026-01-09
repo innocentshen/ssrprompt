@@ -2,11 +2,14 @@ import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import { randomUUID } from 'crypto';
 import { env } from '../config/env.js';
-import { UnauthorizedError, TokenExpiredError } from '@ssrprompt/shared';
+import { UnauthorizedError, TokenExpiredError, ForbiddenError } from '@ssrprompt/shared';
 
 export interface JwtPayload {
   userId: string;
+  email?: string;
   tenantType: 'demo' | 'personal';
+  isDemo: boolean;
+  roles?: string[];
   iat: number;
   exp: number;
 }
@@ -22,12 +25,11 @@ declare global {
 /**
  * Generate a JWT token
  */
-export function generateToken(userId: string, tenantType: 'demo' | 'personal', expiresIn = '7d'): string {
-  return jwt.sign(
-    { userId, tenantType },
-    env.JWT_SECRET,
-    { expiresIn }
-  );
+export function generateToken(
+  payload: Omit<JwtPayload, 'iat' | 'exp'>,
+  expiresIn = '7d'
+): string {
+  return jwt.sign(payload, env.JWT_SECRET, { expiresIn } as jwt.SignOptions);
 }
 
 /**
@@ -35,7 +37,14 @@ export function generateToken(userId: string, tenantType: 'demo' | 'personal', e
  */
 export function generateDemoToken(): { token: string; userId: string } {
   const userId = `demo_${randomUUID()}`;
-  const token = generateToken(userId, 'demo', '7d');
+  const token = generateToken(
+    {
+      userId,
+      tenantType: 'demo',
+      isDemo: true,
+    },
+    '7d'
+  );
   return { token, userId };
 }
 
@@ -50,7 +59,7 @@ export function verifyToken(token: string): JwtPayload {
  * Authentication middleware
  * Validates JWT token and attaches user info to request
  */
-export function authenticateJWT(req: Request, res: Response, next: NextFunction) {
+export function authenticateJWT(req: Request, _res: Response, next: NextFunction) {
   const authHeader = req.headers.authorization;
 
   if (!authHeader?.startsWith('Bearer ')) {
@@ -75,7 +84,7 @@ export function authenticateJWT(req: Request, res: Response, next: NextFunction)
  * Optional authentication middleware
  * Attaches user info if token is present, but doesn't require it
  */
-export function optionalAuth(req: Request, res: Response, next: NextFunction) {
+export function optionalAuth(req: Request, _res: Response, next: NextFunction) {
   const authHeader = req.headers.authorization;
 
   if (!authHeader?.startsWith('Bearer ')) {
@@ -98,7 +107,7 @@ export function optionalAuth(req: Request, res: Response, next: NextFunction) {
  * Middleware to require a specific tenant type
  */
 export function requireTenantType(type: 'demo' | 'personal') {
-  return (req: Request, res: Response, next: NextFunction) => {
+  return (req: Request, _res: Response, next: NextFunction) => {
     if (!req.user) {
       return next(new UnauthorizedError());
     }
@@ -109,4 +118,44 @@ export function requireTenantType(type: 'demo' | 'personal') {
 
     next();
   };
+}
+
+/**
+ * Middleware to require specific roles
+ */
+export function requireRole(...roles: string[]) {
+  return (req: Request, _res: Response, next: NextFunction) => {
+    if (!req.user) {
+      return next(new UnauthorizedError());
+    }
+
+    // Demo users don't have roles
+    if (req.user.isDemo) {
+      return next(new ForbiddenError('This action requires a registered account'));
+    }
+
+    const userRoles = req.user.roles || [];
+    const hasRole = roles.some((role) => userRoles.includes(role));
+
+    if (!hasRole) {
+      return next(new ForbiddenError(`Required role: ${roles.join(' or ')}`));
+    }
+
+    next();
+  };
+}
+
+/**
+ * Middleware to check if user is not demo
+ */
+export function requireRegisteredUser(req: Request, _res: Response, next: NextFunction) {
+  if (!req.user) {
+    return next(new UnauthorizedError());
+  }
+
+  if (req.user.isDemo) {
+    return next(new ForbiddenError('This action requires a registered account'));
+  }
+
+  next();
 }

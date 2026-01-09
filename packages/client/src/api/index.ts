@@ -4,6 +4,8 @@ export { providersApi, modelsApi } from './providers';
 export { promptsApi } from './prompts';
 export { tracesApi } from './traces';
 export { evaluationsApi, testCasesApi, criteriaApi, runsApi } from './evaluations';
+export { filesApi } from './files';
+export { ocrApi } from './ocr';
 export { chatApi, streamChatCompletion, chatCompletion } from './chat';
 export type { TraceQueryParams, UsageStats } from './traces';
 export type { EvaluationWithRelations } from './evaluations';

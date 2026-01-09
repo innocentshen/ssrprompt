@@ -61,12 +61,23 @@ export const UpdatePromptSchema = z.object({
   config: PromptConfigSchema.optional(),
   defaultModelId: z.string().uuid().nullable().optional(),
   orderIndex: z.number().int().min(0).optional(),
+  isPublic: z.boolean().optional(),
 });
 
 // Create Version Schema
 export const CreateVersionSchema = z.object({
   content: z.string().min(1, 'Content is required'),
   commitMessage: z.string().optional(),
+  variables: z.array(PromptVariableSchema).optional(),
+  messages: z.array(PromptMessageSchema).optional(),
+  config: PromptConfigSchema.optional(),
+  defaultModelId: z.string().uuid().nullable().optional(),
+});
+
+// Copy Public Prompt Schema
+export const CopyPublicPromptSchema = z.object({
+  version: z.number().int().positive().optional(),
+  name: z.string().min(1).optional(),
 });
 
 export type PromptVariableInput = z.infer<typeof PromptVariableSchema>;
@@ -75,3 +86,4 @@ export type PromptConfigInput = z.infer<typeof PromptConfigSchema>;
 export type CreatePromptInput = z.infer<typeof CreatePromptSchema>;
 export type UpdatePromptInput = z.infer<typeof UpdatePromptSchema>;
 export type CreateVersionInput = z.infer<typeof CreateVersionSchema>;
+export type CopyPublicPromptInput = z.infer<typeof CopyPublicPromptSchema>;

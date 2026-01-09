@@ -33,7 +33,9 @@ export class ModelsRepository extends ChildRepository<
   async findAllForUser(userId: string): Promise<Model[]> {
     const models = await this.delegate.findMany({
       where: {
-        provider: { userId },
+        provider: {
+          OR: [{ userId }, { isSystem: true }],
+        },
       },
       include: {
         provider: {

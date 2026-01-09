@@ -169,6 +169,31 @@ function openaiModelSupportsPdf(modelId: string): boolean {
 }
 
 /**
+ * 检测 OpenRouter 服务商中的模型是否支持 PDF
+ * OpenRouter 支持多种模型，需要根据模型名称推断
+ */
+function openrouterModelSupportsPdf(modelId: string): boolean {
+  const lowerModelId = modelId.toLowerCase();
+
+  // Gemini 模型 (google/gemini-*)
+  if (lowerModelId.includes('gemini')) {
+    return true;
+  }
+
+  // Claude 模型 (anthropic/claude-*)
+  if (lowerModelId.includes('claude')) {
+    return true;
+  }
+
+  // OpenAI 高级模型
+  if (openaiModelSupportsPdf(modelId)) {
+    return true;
+  }
+
+  return false;
+}
+
+/**
  * 检测 Custom 服务商中的模型是否支持 PDF
  * 根据模型名称推断
  */
@@ -200,6 +225,11 @@ export function inferPdfSupport(providerType: ProviderType, modelId: string): bo
   // Gemini 和 Anthropic 原生支持
   if (providerSupportsPdf(providerType)) {
     return true;
+  }
+
+  // OpenRouter 根据模型名称判断
+  if (providerType === 'openrouter') {
+    return openrouterModelSupportsPdf(modelId);
   }
 
   // OpenAI 根据模型判断

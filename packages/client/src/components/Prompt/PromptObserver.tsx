@@ -3,7 +3,6 @@ import { useTranslation } from 'react-i18next';
 import {
   Eye,
   Clock,
-  AlertCircle,
   CheckCircle2,
   XCircle,
   ChevronRight,
@@ -15,7 +14,7 @@ import {
   Loader2,
 } from 'lucide-react';
 import { Button, Badge, Select, Modal } from '../ui';
-import { getDatabase } from '../../lib/database';
+import { tracesApi } from '../../api';
 import { AttachmentList } from './AttachmentPreview';
 import { AttachmentModal } from './AttachmentModal';
 import type { Trace, Model, FileAttachment } from '../../types';
@@ -34,6 +33,9 @@ interface PromptObserverProps {
   models: Model[];
 }
 
+// API now returns camelCase, no transformation needed
+const transformTrace = (t: unknown): Trace => t as Trace;
+
 function calculateStats(traces: Trace[]): TraceStats {
   if (traces.length === 0) {
     return {
@@ -49,9 +51,9 @@ function calculateStats(traces: Trace[]): TraceStats {
   const successCount = traces.filter((t) => t.status === 'success').length;
   return {
     totalCalls: traces.length,
-    totalTokensIn: traces.reduce((sum, t) => sum + t.tokens_input, 0),
-    totalTokensOut: traces.reduce((sum, t) => sum + t.tokens_output, 0),
-    avgLatencyMs: Math.round(traces.reduce((sum, t) => sum + t.latency_ms, 0) / traces.length),
+    totalTokensIn: traces.reduce((sum, t) => sum + (t.tokensInput || 0), 0),
+    totalTokensOut: traces.reduce((sum, t) => sum + (t.tokensOutput || 0), 0),
+    avgLatencyMs: Math.round(traces.reduce((sum, t) => sum + (t.latencyMs || 0), 0) / traces.length),
     successRate: Math.round((successCount / traces.length) * 100),
     errorCount: traces.length - successCount,
   };
@@ -67,40 +69,34 @@ export function PromptObserver({ promptId, models }: PromptObserverProps) {
   const [previewAttachment, setPreviewAttachment] = useState<FileAttachment | null>(null);
   const [attachmentsLoading, setAttachmentsLoading] = useState(false);
 
-  // Check if trace has attachments (via metadata.files)
   const hasAttachments = (trace: Trace): boolean => {
+    // Check both attachments array and metadata.files
+    if (trace.attachments && trace.attachments.length > 0) {
+      return true;
+    }
     const metadata = trace.metadata as { files?: { name: string; type: string }[] } | null;
     return !!(metadata?.files && metadata.files.length > 0);
   };
 
-  // Get attachment count from metadata
   const getAttachmentCount = (trace: Trace): number => {
+    if (trace.attachments && trace.attachments.length > 0) {
+      return trace.attachments.length;
+    }
     const metadata = trace.metadata as { files?: { name: string; type: string }[] } | null;
     return metadata?.files?.length || 0;
   };
 
-  // Handle trace selection with async attachment loading
   const handleSelectTrace = async (trace: Trace) => {
+    // Always fetch full trace details (list doesn't include output field)
     setSelectedTrace(trace);
-    setAttachmentsLoading(false);
-
-    if (hasAttachments(trace)) {
-      setAttachmentsLoading(true);
-      try {
-        const { data } = await getDatabase()
-          .from('traces')
-          .select('attachments')
-          .eq('id', trace.id)
-          .single();
-
-        if (data?.attachments) {
-          setSelectedTrace(prev => prev ? { ...prev, attachments: data.attachments } : null);
-        }
-      } catch (e) {
-        console.error('Failed to load attachments:', e);
-      } finally {
-        setAttachmentsLoading(false);
-      }
+    setAttachmentsLoading(true);
+    try {
+      const fullTrace = await tracesApi.getById(trace.id);
+      setSelectedTrace(transformTrace(fullTrace));
+    } catch (e) {
+      console.error('Failed to load full trace:', e);
+    } finally {
+      setAttachmentsLoading(false);
     }
   };
 
@@ -111,21 +107,15 @@ export function PromptObserver({ promptId, models }: PromptObserverProps) {
   const loadTraces = async () => {
     setLoading(true);
     try {
-      // Exclude attachments field from initial query for better performance
-      const { data, error } = await getDatabase()
-        .from('traces')
-        .select('id,user_id,prompt_id,model_id,input,output,tokens_input,tokens_output,latency_ms,status,error_message,metadata,created_at')
-        .eq('prompt_id', promptId)
-        .order('created_at', { ascending: false })
-        .limit(100);
+      const response = await tracesApi.list({
+        promptId,
+        limit: 100,
+        status: filterStatus !== 'all' ? (filterStatus as 'success' | 'error') : undefined,
+      });
 
-      if (error) {
-        console.error('Failed to load traces:', error);
-      }
-      if (data) {
-        setTraces(data);
-        setStats(calculateStats(data));
-      }
+      const transformedTraces = response.data.map(transformTrace);
+      setTraces(transformedTraces);
+      setStats(calculateStats(transformedTraces));
     } catch (e) {
       console.error('Failed to load traces:', e);
     }
@@ -139,20 +129,25 @@ export function PromptObserver({ promptId, models }: PromptObserverProps) {
     return t.status === filterStatus;
   });
 
-  const formatTime = (dateString: string) => {
-    const date = new Date(dateString);
-    return date.toLocaleString(undefined, {
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-    });
+  const formatTime = (dateString: string | undefined | null) => {
+    if (!dateString) return '-';
+    try {
+      const date = new Date(dateString);
+      if (isNaN(date.getTime())) return '-';
+      return date.toLocaleString(undefined, {
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+      });
+    } catch {
+      return '-';
+    }
   };
 
   return (
     <div className="h-full flex flex-col">
-      {/* Stats Cards */}
       <div className="flex-shrink-0 p-4 border-b border-slate-700 light:border-slate-200">
         <div className="flex items-center justify-between mb-4">
           <div className="flex items-center gap-2">
@@ -218,7 +213,6 @@ export function PromptObserver({ promptId, models }: PromptObserverProps) {
         )}
       </div>
 
-      {/* Trace List */}
       <div className="flex-1 overflow-y-auto">
         {loading ? (
           <div className="flex items-center justify-center h-full">
@@ -252,21 +246,21 @@ export function PromptObserver({ promptId, models }: PromptObserverProps) {
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 mb-1">
                     <span className="text-sm text-slate-300 light:text-slate-800 font-medium truncate">
-                      {getModelName(trace.model_id)}
+                      {getModelName(trace.modelId)}
                     </span>
-                    <span className="text-xs text-slate-500">{formatTime(trace.created_at)}</span>
+                    <span className="text-xs text-slate-500">{formatTime(trace.createdAt)}</span>
                   </div>
                   <p className="text-xs text-slate-500 truncate">
-                    {trace.input.substring(0, 100)}...
+                    {trace.input ? `${trace.input.substring(0, 100)}...` : '-'}
                   </p>
                 </div>
                 <div className="flex-shrink-0 flex items-center gap-4 text-xs">
                   <span className="text-slate-400">
-                    <span className="text-cyan-400 light:text-cyan-600">{trace.tokens_input}</span>
+                    <span className="text-cyan-400 light:text-cyan-600">{trace.tokensInput}</span>
                     <span className="mx-1">/</span>
-                    <span className="text-teal-400 light:text-teal-600">{trace.tokens_output}</span>
+                    <span className="text-teal-400 light:text-teal-600">{trace.tokensOutput}</span>
                   </span>
-                  <span className="text-slate-400 light:text-slate-600">{trace.latency_ms}ms</span>
+                  <span className="text-slate-400 light:text-slate-600">{trace.latencyMs}ms</span>
                   <ChevronRight className="w-4 h-4 text-slate-600 light:text-slate-400" />
                 </div>
               </div>
@@ -275,7 +269,6 @@ export function PromptObserver({ promptId, models }: PromptObserverProps) {
         )}
       </div>
 
-      {/* Trace Detail Modal */}
       <Modal
         isOpen={!!selectedTrace}
         onClose={() => setSelectedTrace(null)}
@@ -294,19 +287,19 @@ export function PromptObserver({ promptId, models }: PromptObserverProps) {
               <div className="p-3 bg-slate-800/50 light:bg-slate-100 border border-slate-700 light:border-slate-200 rounded-lg">
                 <p className="text-xs text-slate-500 light:text-slate-600 mb-1">{t('latency')}</p>
                 <p className="text-sm font-medium text-slate-200 light:text-slate-800">
-                  {selectedTrace.latency_ms}ms
+                  {selectedTrace.latencyMs}ms
                 </p>
               </div>
               <div className="p-3 bg-slate-800/50 light:bg-slate-100 border border-slate-700 light:border-slate-200 rounded-lg">
                 <p className="text-xs text-slate-500 light:text-slate-600 mb-1">{t('inputTokens')}</p>
                 <p className="text-sm font-medium text-cyan-400 light:text-cyan-600">
-                  {selectedTrace.tokens_input}
+                  {selectedTrace.tokensInput}
                 </p>
               </div>
               <div className="p-3 bg-slate-800/50 light:bg-slate-100 border border-slate-700 light:border-slate-200 rounded-lg">
                 <p className="text-xs text-slate-500 light:text-slate-600 mb-1">{t('outputTokens')}</p>
                 <p className="text-sm font-medium text-teal-400 light:text-teal-600">
-                  {selectedTrace.tokens_output}
+                  {selectedTrace.tokensOutput}
                 </p>
               </div>
             </div>
@@ -329,20 +322,19 @@ export function PromptObserver({ promptId, models }: PromptObserverProps) {
               </div>
             </div>
 
-            {selectedTrace.error_message && (
+            {selectedTrace.errorMessage && (
               <div>
                 <h4 className="text-sm font-medium text-rose-400 light:text-rose-600 mb-2">
                   {t('errorMessage')}
                 </h4>
                 <div className="p-4 bg-rose-500/10 light:bg-rose-50 border border-rose-500/30 light:border-rose-200 rounded-lg">
                   <pre className="text-sm text-rose-300 light:text-rose-700 whitespace-pre-wrap font-mono">
-                    {selectedTrace.error_message}
+                    {selectedTrace.errorMessage}
                   </pre>
                 </div>
               </div>
             )}
 
-            {/* Attachments Section */}
             {hasAttachments(selectedTrace) && (
               <div>
                 <div className="flex items-center gap-2 mb-2">
@@ -375,14 +367,13 @@ export function PromptObserver({ promptId, models }: PromptObserverProps) {
 
             <div className="pt-4 border-t border-slate-700 light:border-slate-200">
               <p className="text-xs text-slate-500 light:text-slate-600">
-                {t('createdAt')}: {new Date(selectedTrace.created_at).toLocaleString()}
+                {t('createdAt')}: {formatTime(selectedTrace.createdAt)}
               </p>
             </div>
           </div>
         )}
       </Modal>
 
-      {/* Attachment Preview Modal */}
       <AttachmentModal
         attachment={previewAttachment}
         isOpen={!!previewAttachment}

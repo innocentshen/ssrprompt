@@ -9,5 +9,9 @@
   "directToWorkspace": "Go to Workspace",
   "debugDescription": "Already have a prompt? Go directly to the development workspace for testing, comparison, and optimization.",
   "enterWorkspace": "Enter Workspace",
+  "explorePlaza": "Explore Prompt Plaza",
+  "publicPrompts": "Browse Public Prompts",
+  "plazaDescription": "Discover and reuse high-quality prompts shared by the community.",
+  "enterPlaza": "Enter Plaza",
   "tip": "Tip: You can navigate to different features from the sidebar anytime"
 }

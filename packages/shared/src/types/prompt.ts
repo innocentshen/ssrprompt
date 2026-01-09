@@ -1,4 +1,6 @@
 // Prompt Types
+import type { ProviderType } from './provider.js';
+
 export interface PromptVariable {
   name: string;
   type: 'string' | 'number' | 'boolean' | 'array' | 'object';
@@ -44,6 +46,7 @@ export interface Prompt {
   currentVersion: number;
   defaultModelId: string | null;
   orderIndex: number;
+  isPublic: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -54,6 +57,24 @@ export interface PromptVersion {
   version: number;
   content: string;
   commitMessage: string | null;
+  /**
+   * Snapshot fields for restoring/running a version.
+   * NOTE: May be undefined for legacy versions.
+   */
+  variables?: PromptVariable[];
+  messages?: PromptMessage[];
+  config?: PromptConfig;
+  defaultModelId?: string | null;
+  /**
+   * Whether this version is published publicly.
+   * NOTE: May be undefined for legacy responses.
+   */
+  isPublic?: boolean;
+  /**
+   * Public publish timestamp.
+   * NOTE: May be undefined for legacy responses.
+   */
+  publishedAt?: string | null;
   createdAt: string;
 }
 
@@ -76,16 +97,56 @@ export interface UpdatePromptDto {
   config?: PromptConfig;
   defaultModelId?: string | null;
   orderIndex?: number;
+  isPublic?: boolean;
 }
 
 // Prompt List Item (without large fields)
 export interface PromptListItem {
   id: string;
+  userId: string;
   name: string;
   description: string | null;
   currentVersion: number;
   defaultModelId: string | null;
   orderIndex: number;
+  isPublic: boolean;
   createdAt: string;
   updatedAt: string;
+}
+
+// ============ Public Prompt Plaza Types ============
+
+export interface PublicUserProfile {
+  id: string;
+  name: string | null;
+  avatar: string | null;
+}
+
+export interface PublicModelInfo {
+  providerType: ProviderType;
+  modelId: string;
+  name: string;
+}
+
+export interface PublicPromptListItem {
+  id: string; // promptId
+  name: string;
+  description: string | null;
+  publicVersion: number;
+  author: PublicUserProfile;
+  defaultModel: PublicModelInfo | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface PublicPromptDetail extends PublicPromptListItem {
+  content: string;
+  variables: PromptVariable[];
+  messages: PromptMessage[];
+  config: PromptConfig;
+}
+
+export interface CopyPublicPromptDto {
+  version?: number;
+  name?: string;
 }

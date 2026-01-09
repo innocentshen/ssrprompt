@@ -1,6 +1,6 @@
 // Evaluation Types
-import type { FileAttachment } from './trace';
-export type { FileAttachment };
+import type { FileAttachment } from './trace.js';
+import type { OcrProvider } from './ocr.js';
 
 export type EvaluationStatus = 'pending' | 'running' | 'completed' | 'failed';
 
@@ -16,6 +16,19 @@ export interface EvaluationConfig {
   pass_threshold?: number;
   model_parameters?: ModelParameters;
   inherited_from_prompt?: boolean;
+  /**
+   * How to process file attachments when sending to the model.
+   * - auto: vision models send files directly; non-vision models use OCR (if available).
+   * - vision: send files directly to the model (requires vision-capable model).
+   * - ocr: always OCR PDF/images and send extracted text to the model.
+   * - none: do not send attachments to the model.
+   */
+  file_processing?: 'auto' | 'vision' | 'ocr' | 'none';
+  /**
+   * Optional OCR provider override for this evaluation (only used when file_processing resolves to "ocr").
+   * When not set, the user's OCR settings provider is used.
+   */
+  ocr_provider?: OcrProvider;
 }
 
 export interface Evaluation {
@@ -28,6 +41,7 @@ export interface Evaluation {
   status: EvaluationStatus;
   config: EvaluationConfig;
   results: Record<string, unknown>;
+  isPublic: boolean;
   createdAt: string;
   completedAt: string | null;
 }
@@ -48,6 +62,7 @@ export interface UpdateEvaluationDto {
   status?: EvaluationStatus;
   config?: EvaluationConfig;
   results?: Record<string, unknown>;
+  isPublic?: boolean;
   completedAt?: string | null;
 }
 

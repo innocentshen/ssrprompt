@@ -36,6 +36,7 @@ interface SchemaFieldEditorProps {
   onChange: (field: SchemaField) => void;
   onDelete: () => void;
   depth?: number;
+  disabled?: boolean;
   t: (key: string) => string;
 }
 
@@ -50,11 +51,12 @@ function getDepthColor(depth: number): string {
   return colors[depth % colors.length];
 }
 
-function SchemaFieldEditor({ field, onChange, onDelete, depth = 0, t }: SchemaFieldEditorProps) {
+function SchemaFieldEditor({ field, onChange, onDelete, depth = 0, disabled = false, t }: SchemaFieldEditorProps) {
   const [expanded, setExpanded] = useState(false); // 默认折叠
   const hasChildren = field.type === 'object' || field.type === 'array';
 
   const handleAddProperty = () => {
+    if (disabled) return;
     if (field.type === 'object') {
       const newProp = createDefaultField((field.properties?.length || 0) + 1);
       onChange({
@@ -65,6 +67,7 @@ function SchemaFieldEditor({ field, onChange, onDelete, depth = 0, t }: SchemaFi
   };
 
   const handleUpdateProperty = (index: number, updatedProp: SchemaField) => {
+    if (disabled) return;
     if (field.properties) {
       const newProps = [...field.properties];
       newProps[index] = updatedProp;
@@ -73,12 +76,14 @@ function SchemaFieldEditor({ field, onChange, onDelete, depth = 0, t }: SchemaFi
   };
 
   const handleDeleteProperty = (index: number) => {
+    if (disabled) return;
     if (field.properties) {
       onChange({ ...field, properties: field.properties.filter((_, i) => i !== index) });
     }
   };
 
   const handleSetArrayItems = () => {
+    if (disabled) return;
     if (field.type === 'array' && !field.items) {
       onChange({
         ...field,
@@ -126,6 +131,7 @@ function SchemaFieldEditor({ field, onChange, onDelete, depth = 0, t }: SchemaFi
               onChange={(e) => onChange({ ...field, name: e.target.value })}
               onClick={(e) => e.stopPropagation()}
               placeholder={t('fieldName')}
+              disabled={disabled}
               className="flex-1 h-7 text-sm font-mono"
             />
           </div>
@@ -144,6 +150,7 @@ function SchemaFieldEditor({ field, onChange, onDelete, depth = 0, t }: SchemaFi
                 });
               }}
               onClick={(e) => e.stopPropagation()}
+              disabled={disabled}
               className="w-24 h-7 px-2 text-sm bg-slate-700 light:bg-slate-100 border border-slate-600 light:border-slate-300 rounded text-slate-100 light:text-slate-800 focus:outline-none focus:ring-1 focus:ring-cyan-500 cursor-pointer"
             >
               {FIELD_TYPES.map((ft) => (
@@ -161,6 +168,7 @@ function SchemaFieldEditor({ field, onChange, onDelete, depth = 0, t }: SchemaFi
                 type="checkbox"
                 checked={field.required}
                 onChange={(e) => onChange({ ...field, required: e.target.checked })}
+                disabled={disabled}
                 className="w-3.5 h-3.5 rounded border-slate-600 bg-slate-700 text-cyan-500 focus:ring-cyan-500 focus:ring-offset-slate-900"
               />
               {t('required')}
@@ -171,7 +179,12 @@ function SchemaFieldEditor({ field, onChange, onDelete, depth = 0, t }: SchemaFi
                 e.stopPropagation();
                 onDelete();
               }}
-              className="p-1 text-slate-400 hover:text-red-400 light:text-slate-500 light:hover:text-red-500 transition-colors flex-shrink-0"
+              disabled={disabled}
+              className={`p-1 transition-colors flex-shrink-0 ${
+                disabled
+                  ? 'text-slate-600 light:text-slate-400 cursor-not-allowed'
+                  : 'text-slate-400 hover:text-red-400 light:text-slate-500 light:hover:text-red-500'
+              }`}
             >
               <Trash2 className="w-3.5 h-3.5" />
             </button>
@@ -202,25 +215,27 @@ function SchemaFieldEditor({ field, onChange, onDelete, depth = 0, t }: SchemaFi
         {/* 展开区域 - 高级选项 */}
         {expanded && (
           <div className="p-3 space-y-3 border-t border-slate-700 light:border-slate-200 bg-slate-900/20 light:bg-white">
-            <Input
-              value={field.description || ''}
-              onChange={(e) => onChange({ ...field, description: e.target.value })}
-              placeholder={t('descriptionOptional')}
-              className="text-sm"
-            />
-
-            {field.type === 'string' && (
               <Input
-                value={field.enum?.join(', ') || ''}
-                onChange={(e) =>
-                  onChange({
-                    ...field,
-                    enum: e.target.value ? e.target.value.split(',').map((s) => s.trim()) : undefined,
-                  })
-                }
-                placeholder={t('enumValuesOptional')}
+                value={field.description || ''}
+                onChange={(e) => onChange({ ...field, description: e.target.value })}
+                placeholder={t('descriptionOptional')}
+                disabled={disabled}
                 className="text-sm"
               />
+
+            {field.type === 'string' && (
+                <Input
+                  value={field.enum?.join(', ') || ''}
+                  onChange={(e) =>
+                    onChange({
+                      ...field,
+                      enum: e.target.value ? e.target.value.split(',').map((s) => s.trim()) : undefined,
+                    })
+                  }
+                  placeholder={t('enumValuesOptional')}
+                  disabled={disabled}
+                  className="text-sm"
+                />
             )}
 
             {field.type === 'array' && (
@@ -232,10 +247,11 @@ function SchemaFieldEditor({ field, onChange, onDelete, depth = 0, t }: SchemaFi
                     onChange={(items) => onChange({ ...field, items })}
                     onDelete={() => onChange({ ...field, items: undefined })}
                     depth={depth + 1}
+                    disabled={disabled}
                     t={t}
                   />
                 ) : (
-                  <Button variant="secondary" size="sm" onClick={handleSetArrayItems}>
+                  <Button variant="secondary" size="sm" onClick={handleSetArrayItems} disabled={disabled}>
                     <Plus className="w-3 h-3 mr-1" />
                     {t('defineItemType')}
                   </Button>
@@ -253,10 +269,11 @@ function SchemaFieldEditor({ field, onChange, onDelete, depth = 0, t }: SchemaFi
                     onChange={(p) => handleUpdateProperty(index, p)}
                     onDelete={() => handleDeleteProperty(index)}
                     depth={depth + 1}
+                    disabled={disabled}
                     t={t}
                   />
                 ))}
-                <Button variant="secondary" size="sm" onClick={handleAddProperty} className="text-xs">
+                <Button variant="secondary" size="sm" onClick={handleAddProperty} disabled={disabled} className="text-xs">
                   <Plus className="w-3 h-3 mr-1" />
                   {t('addProperty')}
                 </Button>
@@ -466,6 +483,7 @@ export function StructuredOutputEditor({
                         field={field}
                         onChange={(f) => handleUpdateField(index, f)}
                         onDelete={() => handleDeleteField(index)}
+                        disabled={disabled}
                         t={t}
                       />
                     ))}

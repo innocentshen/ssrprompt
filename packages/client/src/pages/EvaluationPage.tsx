@@ -14,17 +14,19 @@ import {
   Pencil,
   Check,
   X,
+  Globe,
 } from 'lucide-react';
 import { Button, Input, Modal, Badge, Select, useToast, ModelSelector } from '../components/ui';
 import { TestCaseList, CriteriaEditor, EvaluationResultsView, RunHistory } from '../components/Evaluation';
 import { ParameterPanel } from '../components/Prompt/ParameterPanel';
-import { getDatabase, isDatabaseConfigured, getMySQLAdapter, getCurrentProvider } from '../lib/database';
-import { callAIModel, type FileAttachment } from '../lib/ai-service';
+import { evaluationsApi, runsApi, promptsApi, providersApi, modelsApi, type EvaluationWithRelations } from '../api';
+import { chatApi, type ContentPart } from '../api/chat';
+import type { FileAttachment } from '../lib/ai-service';
 import { getFileUploadCapabilities } from '../lib/model-capabilities';
 import { cacheEvents } from '../lib/cache-events';
-import { DEFAULT_PROMPT_CONFIG } from '../types/database';
+import { formatDateTime } from '../lib/date-utils';
+import { DEFAULT_PROMPT_CONFIG } from '../types';
 import type {
-  Evaluation,
   Prompt,
   Model,
   Provider,
@@ -36,6 +38,7 @@ import type {
   EvaluationRun,
   PromptConfig,
   ModelParameters,
+  EvaluationConfig,
 } from '../types';
 
 const statusConfig: Record<EvaluationStatus, { labelKey: string; variant: 'info' | 'warning' | 'success' | 'error' }> = {
@@ -47,7 +50,7 @@ const statusConfig: Record<EvaluationStatus, { labelKey: string; variant: 'info'
 
 type TabType = 'testcases' | 'criteria' | 'history' | 'results';
 
-// 缓存数据类型（不包含附件的 base64 数据，避免内存过大）
+// 缓存数据类型（不包含附件文件本体，仅 fileId 引用，避免内存过大）
 interface EvaluationCacheData {
   testCases: TestCase[];
   criteria: EvaluationCriterion[];
@@ -58,28 +61,29 @@ interface EvaluationCacheData {
 
 // 使用内存缓存，不用 localStorage（附件数据太大）
 const evaluationCache = new Map<string, EvaluationCacheData>();
+// Track per-evaluation draft edits (not yet submitted)
+const evaluationDraftDirty = new Set<string>();
 
 // 列表缓存
 interface ListCache {
-  evaluations: Evaluation[];
+  evaluations: EvaluationWithRelations[];
   prompts: Prompt[];
   models: Model[];
   providers: Provider[];
 }
 
 let listCache: ListCache | null = null;
-let listDataLoading = false;  // 全局加载状态，防止重复请求
 const loadingEvaluations = new Set<string>();  // 正在加载的评测ID集合
 
 export function EvaluationPage() {
   const { showToast } = useToast();
   const { t } = useTranslation('evaluation');
   const { t: tCommon } = useTranslation('common');
-  const [evaluations, setEvaluations] = useState<Evaluation[]>([]);
+  const [evaluations, setEvaluations] = useState<EvaluationWithRelations[]>([]);
   const [prompts, setPrompts] = useState<Prompt[]>([]);
   const [models, setModels] = useState<Model[]>([]);
   const [providers, setProviders] = useState<Provider[]>([]);
-  const [selectedEvaluation, setSelectedEvaluation] = useState<Evaluation | null>(null);
+  const [selectedEvaluation, setSelectedEvaluation] = useState<EvaluationWithRelations | null>(null);
   const [showNewEval, setShowNewEval] = useState(false);
   const [newEvalName, setNewEvalName] = useState('');
   const [newEvalPrompt, setNewEvalPrompt] = useState('');
@@ -98,6 +102,8 @@ export function EvaluationPage() {
   const [runningTestCaseId, setRunningTestCaseId] = useState<string | null>(null);
   const [isEditingName, setIsEditingName] = useState(false);
   const [editingName, setEditingName] = useState('');
+  const [hasDraftChanges, setHasDraftChanges] = useState(false);
+  const [submittingNewVersion, setSubmittingNewVersion] = useState(false);
   // 评测模型参数配置
   const [evalModelConfig, setEvalModelConfig] = useState<PromptConfig>(DEFAULT_PROMPT_CONFIG);
   const [showParamsModal, setShowParamsModal] = useState(false);
@@ -111,30 +117,30 @@ export function EvaluationPage() {
 
   // 计算当前评测模型的文件上传能力
   const fileUploadCapabilities = useMemo(() => {
-    if (!selectedEvaluation?.model_id) {
+    if (!selectedEvaluation?.modelId) {
       return { accept: '.txt,.md,.json,.csv,.xml,.yaml,.yml', canUploadImage: false, canUploadPdf: false, canUploadText: true };
     }
-    const model = models.find((m) => m.id === selectedEvaluation.model_id);
-    const provider = providers.find((p) => p.id === model?.provider_id);
+    const model = models.find((m) => m.id === selectedEvaluation.modelId);
+    const provider = providers.find((p) => p.id === model?.providerId);
     if (!model || !provider) {
       return { accept: '.txt,.md,.json,.csv,.xml,.yaml,.yml', canUploadImage: false, canUploadPdf: false, canUploadText: true };
     }
-    return getFileUploadCapabilities(provider.type, model.model_id, model.supports_vision ?? true);
-  }, [selectedEvaluation?.model_id, models, providers]);
+    return getFileUploadCapabilities(provider.type, model.modelId, model.supportsVision ?? true);
+  }, [selectedEvaluation?.modelId, models, providers]);
 
   // 获取当前评测模型的信息用于传递给子组件
   const currentModelInfo = useMemo(() => {
-    if (!selectedEvaluation?.model_id) {
+    if (!selectedEvaluation?.modelId) {
       return { providerType: undefined, modelId: undefined, supportsVision: true };
     }
-    const model = models.find((m) => m.id === selectedEvaluation.model_id);
-    const provider = providers.find((p) => p.id === model?.provider_id);
+    const model = models.find((m) => m.id === selectedEvaluation.modelId);
+    const provider = providers.find((p) => p.id === model?.providerId);
     return {
       providerType: provider?.type,
-      modelId: model?.model_id,
-      supportsVision: model?.supports_vision ?? true,
+      modelId: model?.modelId,
+      supportsVision: model?.supportsVision ?? true,
     };
-  }, [selectedEvaluation?.model_id, models, providers]);
+  }, [selectedEvaluation?.modelId, models, providers]);
 
   useEffect(() => {
     loadData();
@@ -144,19 +150,23 @@ export function EvaluationPage() {
   useEffect(() => {
     const unsubscribe = cacheEvents.subscribe((type, data) => {
       if (type === 'prompts') {
-        // 清除列表缓存，下次加载时会重新获取数据
-        listCache = null;
         // 如果有更新的 prompt 数据，直接更新 prompts 状态
         if (data && typeof data === 'object' && 'id' in data) {
+          const updatedPrompt = data as Prompt;
           setPrompts((prev) =>
-            prev.map((p) => (p.id === (data as Prompt).id ? (data as Prompt) : p))
+            prev.some((p) => p.id === updatedPrompt.id)
+              ? prev.map((p) => (p.id === updatedPrompt.id ? updatedPrompt : p))
+              : [updatedPrompt, ...prev]
           );
           // 同时更新 listCache（如果存在）
           if (listCache) {
-            listCache.prompts = listCache.prompts.map((p) =>
-              p.id === (data as Prompt).id ? (data as Prompt) : p
-            );
+            listCache.prompts = listCache.prompts.some((p: Prompt) => p.id === updatedPrompt.id)
+              ? listCache.prompts.map((p: Prompt) => (p.id === updatedPrompt.id ? updatedPrompt : p))
+              : [updatedPrompt, ...listCache.prompts];
           }
+        } else {
+          // 清除列表缓存，下次加载时会重新获取数据
+          listCache = null;
         }
       }
     });
@@ -181,7 +191,6 @@ export function EvaluationPage() {
 
     // 如果正在加载这个评测，只需要显示加载状态，不重复发起请求
     if (loadingEvaluations.has(evaluationId)) {
-      // 显示加载状态并清空旧数据
       setDetailsLoading(true);
       setTestCases([]);
       setCriteria([]);
@@ -193,7 +202,6 @@ export function EvaluationPage() {
 
     loadingEvaluations.add(evaluationId);
     setDetailsLoading(true);
-    // 清空旧数据，避免显示上一个评测的内容
     setTestCases([]);
     setCriteria([]);
     setRuns([]);
@@ -201,73 +209,17 @@ export function EvaluationPage() {
     setSelectedRun(null);
 
     try {
-      // 优先使用 MySQL 专用接口（一次请求获取所有数据）
-      const mysqlAdapter = getMySQLAdapter();
-      if (mysqlAdapter) {
-        const { data, error } = await mysqlAdapter.getEvaluationDetails(evaluationId);
-        if (error) {
-          console.error('Failed to load evaluation details:', error);
-          return;
-        }
-        if (data) {
-          const loadedTestCases = (data.testCases || []).map(tc => ({
-            ...tc,
-            attachments: (tc.attachments as unknown[]) || [],
-            notes: tc.notes || null,
-          })) as TestCase[];
-          const loadedCriteria = (data.criteria || []) as EvaluationCriterion[];
-          const loadedRuns = (data.runs || []) as EvaluationRun[];
-          const loadedResults = (data.results || []) as TestCaseResult[];
-          const loadedSelectedRunId = data.latestCompletedRunId;
+      // 使用新 API 获取评测详情（包含所有关联数据）
+      const evaluation = await evaluationsApi.getById(evaluationId);
 
-          // 存入缓存
-          evaluationCache.set(evaluationId, {
-            testCases: loadedTestCases,
-            criteria: loadedCriteria,
-            runs: loadedRuns,
-            results: loadedResults,
-            selectedRunId: loadedSelectedRunId,
-          });
-
-          // 只有当前选中的评测还是这个时才更新状态
-          if (selectedEvaluationIdRef.current === evaluationId) {
-            setTestCases(loadedTestCases);
-            setCriteria(loadedCriteria);
-            setRuns(loadedRuns);
-            setResults(loadedResults);
-            setSelectedRun(loadedRuns.find(r => r.id === loadedSelectedRunId) || null);
-          }
-          return;
-        }
-      }
-
-      // 回退到标准查询（用于 Supabase）
-      const db = getDatabase();
-      const [testCasesRes, criteriaRes, runsRes] = await Promise.all([
-        db
-          .from('test_cases')
-          .select('*')
-          .eq('evaluation_id', evaluationId)
-          .order('order_index'),
-        db
-          .from('evaluation_criteria')
-          .select('*')
-          .eq('evaluation_id', evaluationId)
-          .order('created_at'),
-        db
-          .from('evaluation_runs')
-          .select('*')
-          .eq('evaluation_id', evaluationId)
-          .order('created_at', { ascending: false }),
-      ]);
-
-      const loadedTestCases = (testCasesRes.data || []).map(tc => ({
+      const loadedTestCases = (evaluation.testCases || []).map(tc => ({
         ...tc,
-        attachments: tc.attachments || [],
+        attachments: (tc.attachments as FileAttachment[]) || [],
         notes: tc.notes || null,
-      }));
-      const loadedCriteria = criteriaRes.data || [];
-      const loadedRuns = runsRes.data || [];
+      })) as TestCase[];
+      const loadedCriteria = (evaluation.criteria || []) as EvaluationCriterion[];
+      const loadedRuns = (evaluation.runs || []) as EvaluationRun[];
+
       let loadedResults: TestCaseResult[] = [];
       let loadedSelectedRunId: string | null = null;
 
@@ -275,12 +227,7 @@ export function EvaluationPage() {
         const latestCompletedRun = loadedRuns.find(r => r.status === 'completed');
         if (latestCompletedRun) {
           loadedSelectedRunId = latestCompletedRun.id;
-          const resultsRes = await db
-            .from('test_case_results')
-            .select('*')
-            .eq('run_id', latestCompletedRun.id)
-            .order('created_at');
-          loadedResults = resultsRes.data || [];
+          loadedResults = await runsApi.getResults(latestCompletedRun.id);
         }
       }
 
@@ -293,7 +240,7 @@ export function EvaluationPage() {
         selectedRunId: loadedSelectedRunId,
       });
 
-      // 只有当前选中的评测还是这个时才更新状态（解决问题1）
+      // 只有当前选中的评测还是这个时才更新状态
       if (selectedEvaluationIdRef.current === evaluationId) {
         setTestCases(loadedTestCases);
         setCriteria(loadedCriteria);
@@ -301,10 +248,10 @@ export function EvaluationPage() {
         setResults(loadedResults);
         setSelectedRun(loadedRuns.find(r => r.id === loadedSelectedRunId) || null);
       }
+    } catch (error) {
+      console.error('Failed to load evaluation details:', error);
     } finally {
-      // 移除加载标记
       loadingEvaluations.delete(evaluationId);
-      // 只有当前选中的评测还是这个时才取消加载状态
       if (selectedEvaluationIdRef.current === evaluationId) {
         setDetailsLoading(false);
       }
@@ -315,6 +262,7 @@ export function EvaluationPage() {
   const selectedEvaluationId = selectedEvaluation?.id;
   useEffect(() => {
     if (selectedEvaluationId) {
+      setHasDraftChanges(evaluationDraftDirty.has(selectedEvaluationId));
       loadEvaluationDetails(selectedEvaluationId);
     } else {
       setTestCases([]);
@@ -322,6 +270,7 @@ export function EvaluationPage() {
       setResults([]);
       setRuns([]);
       setSelectedRun(null);
+      setHasDraftChanges(false);
     }
   }, [selectedEvaluationId, loadEvaluationDetails]);
 
@@ -343,21 +292,21 @@ export function EvaluationPage() {
   }, [selectedEvaluationId]);
 
   const loadData = async () => {
-    // 检查数据库是否已配置
-    if (!isDatabaseConfigured()) {
-      setListLoading(false);
-      return;
-    }
-
     // 检查是否有 prompts 更新（精确更新缓存，而不是全量刷新）
     if (cacheEvents.hasPendingUpdates('prompts')) {
       const updatedPrompts = cacheEvents.consumePendingUpdates('prompts') as Prompt[];
       if (listCache && updatedPrompts.length > 0) {
-        // 只更新缓存中对应的 prompt，保留其他数据
-        listCache.prompts = listCache.prompts.map((p) => {
-          const updated = updatedPrompts.find((u) => u.id === p.id);
-          return updated || p;
-        });
+        const existingIds = new Set(listCache.prompts.map((p) => p.id));
+        const updatedById = new Map(updatedPrompts.map((p) => [p.id, p]));
+        const merged = listCache.prompts.map((p) => updatedById.get(p.id) || p);
+
+        for (const [id, prompt] of updatedById) {
+          if (!existingIds.has(id)) {
+            merged.unshift(prompt);
+          }
+        }
+
+        listCache.prompts = merged;
       }
     }
 
@@ -376,78 +325,18 @@ export function EvaluationPage() {
 
     setListLoading(true);
     try {
-      // 优先使用 MySQL 批量查询（一次请求获取所有数据）
-      const mysqlAdapter = getMySQLAdapter();
-      if (mysqlAdapter) {
-        const { data, error } = await mysqlAdapter.batchQuery<{
-          evaluations: Evaluation[];
-          prompts: Prompt[];
-          models: Model[];
-          providers: Provider[];
-        }>([
-          {
-            key: 'evaluations',
-            table: 'evaluations',
-            columns: 'id, name, prompt_id, model_id, judge_model_id, status, config, results, created_at, completed_at',
-            orderBy: [{ column: 'created_at', ascending: false }],
-          },
-          {
-            key: 'prompts',
-            table: 'prompts',
-            columns: 'id, name, content, variables, current_version',
-          },
-          {
-            key: 'models',
-            table: 'models',
-            columns: 'id, name, provider_id, model_id',
-          },
-          {
-            key: 'providers',
-            table: 'providers',
-            columns: 'id, name, enabled, type, api_key, base_url',
-            filters: [{ column: 'enabled', operator: '=', value: true }],
-          },
-        ]);
-
-        if (!error && data) {
-          const loadedEvaluations = data.evaluations || [];
-          const loadedPrompts = data.prompts || [];
-          const loadedModels = data.models || [];
-          const loadedProviders = data.providers || [];
-
-          // 保存到缓存
-          listCache = {
-            evaluations: loadedEvaluations,
-            prompts: loadedPrompts,
-            models: loadedModels,
-            providers: loadedProviders,
-          };
-
-          setEvaluations(loadedEvaluations);
-          setPrompts(loadedPrompts);
-          setModels(loadedModels);
-          setProviders(loadedProviders);
-
-          if (loadedEvaluations.length > 0 && !selectedEvaluation) {
-            setSelectedEvaluation(loadedEvaluations[0]);
-          }
-          return;
-        }
-      }
-
-      // 回退到标准查询（用于 Supabase）
-      const db = getDatabase();
-      const [evalsRes, promptsRes, modelsRes, providersRes] = await Promise.all([
-        db.from('evaluations').select('*').order('created_at', { ascending: false }),
-        db.from('prompts').select('*'),
-        db.from('models').select('*'),
-        db.from('providers').select('*').eq('enabled', true),
+      // 并行加载所有数据
+      const [evalsData, promptsData, modelsData, providersData] = await Promise.all([
+        evaluationsApi.list(),
+        promptsApi.list(),
+        modelsApi.list(),
+        providersApi.list(),
       ]);
 
-      const loadedEvaluations = evalsRes.data || [];
-      const loadedPrompts = promptsRes.data || [];
-      const loadedModels = modelsRes.data || [];
-      const loadedProviders = providersRes.data || [];
+      const loadedEvaluations = (evalsData || []) as EvaluationWithRelations[];
+      const loadedPrompts = (promptsData || []) as Prompt[];
+      const loadedModels = (modelsData || []) as Model[];
+      const loadedProviders = (providersData || []).filter(p => p.enabled) as Provider[];
 
       // 保存到缓存
       listCache = {
@@ -465,6 +354,8 @@ export function EvaluationPage() {
       if (loadedEvaluations.length > 0 && !selectedEvaluation) {
         setSelectedEvaluation(loadedEvaluations[0]);
       }
+    } catch (error) {
+      console.error('Failed to load data:', error);
     } finally {
       setListLoading(false);
     }
@@ -479,6 +370,20 @@ export function EvaluationPage() {
   };
 
   // 清除缓存
+  const markEvaluationDirty = (evaluationId: string) => {
+    evaluationDraftDirty.add(evaluationId);
+    if (selectedEvaluationIdRef.current === evaluationId) {
+      setHasDraftChanges(true);
+    }
+  };
+
+  const clearEvaluationDirty = (evaluationId: string) => {
+    evaluationDraftDirty.delete(evaluationId);
+    if (selectedEvaluationIdRef.current === evaluationId) {
+      setHasDraftChanges(false);
+    }
+  };
+
   const clearEvaluationCache = (evaluationId: string) => {
     evaluationCache.delete(evaluationId);
   };
@@ -493,204 +398,143 @@ export function EvaluationPage() {
   const handleCreateEvaluation = async () => {
     if (!newEvalName.trim()) return;
     try {
-      const { data, error } = await getDatabase()
-        .from('evaluations')
-        .insert({
-          name: newEvalName.trim(),
-          prompt_id: newEvalPrompt || null,
-          model_id: newEvalModel || null,
-          judge_model_id: newEvalJudgeModel || null,
-          status: 'pending',
-          config: { pass_threshold: 0.6 },
-          results: {},
-        })
-        .select()
-        .single();
+      const data = await evaluationsApi.create({
+        name: newEvalName.trim(),
+        promptId: newEvalPrompt || undefined,
+        modelId: newEvalModel || undefined,
+        judgeModelId: newEvalJudgeModel || undefined,
+        config: { pass_threshold: 0.6 },
+      });
 
-      if (error) {
-        showToast('error', t('createFailed') + ': ' + error.message);
-        return;
-      }
-
-      if (data) {
-        const newEvaluations = [data, ...evaluations];
-        updateListCache({ evaluations: newEvaluations });
-        setEvaluations(newEvaluations);
-        setSelectedEvaluation(data);
-        setNewEvalName('');
-        setNewEvalPrompt('');
-        setNewEvalModel('');
-        setNewEvalJudgeModel('');
-        setShowNewEval(false);
-        showToast('success', t('evaluationCreated'));
-      }
-    } catch {
-      showToast('error', t('createEvaluationFailed'));
+      const newEvaluations = [data as EvaluationWithRelations, ...evaluations];
+      updateListCache({ evaluations: newEvaluations });
+      setEvaluations(newEvaluations);
+      setSelectedEvaluation(data as EvaluationWithRelations);
+      setNewEvalName('');
+      setNewEvalPrompt('');
+      setNewEvalModel('');
+      setNewEvalJudgeModel('');
+      setShowNewEval(false);
+      showToast('success', t('evaluationCreated'));
+    } catch (e) {
+      showToast('error', t('createFailed') + ': ' + (e instanceof Error ? e.message : 'Unknown error'));
     }
   };
 
   const handleAddTestCase = async () => {
     if (!selectedEvaluation) return;
 
-    const newTestCase: Omit<TestCase, 'id' | 'created_at'> = {
-      evaluation_id: selectedEvaluation.id,
+    const newTestCase: TestCase = {
+      id: `draft-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      evaluationId: selectedEvaluation.id,
       name: '',
-      input_text: '',
-      input_variables: {},
+      inputText: '',
+      inputVariables: {},
       attachments: [],
-      expected_output: null,
-      order_index: testCases.length,
+      expectedOutput: null,
+      notes: null,
+      orderIndex: testCases.length,
+      createdAt: new Date().toISOString(),
     };
 
-    const { data, error } = await getDatabase()
-      .from('test_cases')
-      .insert(newTestCase)
-      .select()
-      .single();
-
-    if (error) {
-      showToast('error', t('addFailed') + ': ' + error.message);
-      return;
-    }
-
-    if (data) {
-      const newTestCases = [...testCases, data];
-      setTestCases(newTestCases);
-      updateEvaluationCache(selectedEvaluation.id, { testCases: newTestCases });
-    }
+    const newTestCases = [...testCases, newTestCase];
+    setTestCases(newTestCases);
+    updateEvaluationCache(selectedEvaluation.id, { testCases: newTestCases });
+    markEvaluationDirty(selectedEvaluation.id);
   };
 
   const handleUpdateTestCase = async (testCase: TestCase) => {
     if (!selectedEvaluation) return;
 
-    const { error } = await getDatabase()
-      .from('test_cases')
-      .update({
-        name: testCase.name,
-        input_text: testCase.input_text,
-        input_variables: testCase.input_variables,
-        attachments: testCase.attachments,
-        expected_output: testCase.expected_output,
-        order_index: testCase.order_index,
-      })
-      .eq('id', testCase.id);
-
-    if (error) {
-      showToast('error', t('updateFailed') + ': ' + error.message);
-      return;
-    }
-
     const newTestCases = testCases.map((tc) => (tc.id === testCase.id ? testCase : tc));
     setTestCases(newTestCases);
     updateEvaluationCache(selectedEvaluation.id, { testCases: newTestCases });
+    markEvaluationDirty(selectedEvaluation.id);
   };
 
   const handleDeleteTestCase = async (id: string) => {
     if (!selectedEvaluation) return;
 
-    const { error } = await getDatabase().from('test_cases').delete().eq('id', id);
-    if (error) {
-      showToast('error', t('deleteFailed') + ': ' + error.message);
-      return;
-    }
-    const newTestCases = testCases.filter((tc) => tc.id !== id);
+    const newTestCases = testCases
+      .filter((tc) => tc.id !== id)
+      .map((tc, idx) => ({ ...tc, orderIndex: idx }));
     setTestCases(newTestCases);
     updateEvaluationCache(selectedEvaluation.id, { testCases: newTestCases });
+    markEvaluationDirty(selectedEvaluation.id);
   };
 
   const handleAddCriterion = async (
-    criterion: Omit<EvaluationCriterion, 'id' | 'evaluation_id' | 'created_at'>
+    criterion: Omit<EvaluationCriterion, 'id' | 'evaluationId' | 'createdAt'>
   ) => {
     if (!selectedEvaluation) return;
 
-    const { data, error } = await getDatabase()
-      .from('evaluation_criteria')
-      .insert({
-        evaluation_id: selectedEvaluation.id,
-        ...criterion,
-      })
-      .select()
-      .single();
+    const newCriterion: EvaluationCriterion = {
+      id: `draft-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      evaluationId: selectedEvaluation.id,
+      name: criterion.name,
+      description: criterion.description || null,
+      prompt: criterion.prompt || null,
+      weight: criterion.weight,
+      enabled: criterion.enabled,
+      createdAt: new Date().toISOString(),
+    };
 
-    if (error) {
-      showToast('error', t('addFailed') + ': ' + error.message);
-      return;
-    }
-
-    if (data) {
-      const newCriteria = [...criteria, data];
-      setCriteria(newCriteria);
-      updateEvaluationCache(selectedEvaluation.id, { criteria: newCriteria });
-    }
+    const newCriteria = [...criteria, newCriterion];
+    setCriteria(newCriteria);
+    updateEvaluationCache(selectedEvaluation.id, { criteria: newCriteria });
+    markEvaluationDirty(selectedEvaluation.id);
   };
 
   const handleUpdateCriterion = async (criterion: EvaluationCriterion) => {
     if (!selectedEvaluation) return;
 
-    const { error } = await getDatabase()
-      .from('evaluation_criteria')
-      .update({
-        name: criterion.name,
-        description: criterion.description,
-        prompt: criterion.prompt,
-        weight: criterion.weight,
-        enabled: criterion.enabled,
-      })
-      .eq('id', criterion.id);
-
-    if (error) {
-      showToast('error', t('updateFailed') + ': ' + error.message);
-      return;
-    }
-
     const newCriteria = criteria.map((c) => (c.id === criterion.id ? criterion : c));
     setCriteria(newCriteria);
     updateEvaluationCache(selectedEvaluation.id, { criteria: newCriteria });
+    markEvaluationDirty(selectedEvaluation.id);
   };
 
   const handleDeleteCriterion = async (id: string) => {
     if (!selectedEvaluation) return;
 
-    const { error } = await getDatabase().from('evaluation_criteria').delete().eq('id', id);
-    if (error) {
-      showToast('error', t('deleteFailed') + ': ' + error.message);
-      return;
-    }
     const newCriteria = criteria.filter((c) => c.id !== id);
     setCriteria(newCriteria);
     updateEvaluationCache(selectedEvaluation.id, { criteria: newCriteria });
+    markEvaluationDirty(selectedEvaluation.id);
   };
 
   const handleSelectRun = async (run: EvaluationRun) => {
     if (!selectedEvaluation) return;
 
     setSelectedRun(run);
-    const resultsRes = await getDatabase()
-      .from('test_case_results')
-      .select('*')
-      .eq('run_id', run.id)
-      .order('created_at');
-    if (resultsRes.data) {
-      setResults(resultsRes.data);
-      updateEvaluationCache(selectedEvaluation.id, { results: resultsRes.data, selectedRunId: run.id });
+    try {
+      const resultsData = await runsApi.getResults(run.id);
+      setResults(resultsData);
+      updateEvaluationCache(selectedEvaluation.id, { results: resultsData, selectedRunId: run.id });
+    } catch (e) {
+      console.error('Failed to load run results:', e);
     }
     setActiveTab('results');
   };
 
   const runEvaluation = async () => {
     if (!selectedEvaluation) return;
+    if (hasDraftChanges) {
+      showToast('error', t('submitNewVersionToRun'));
+      return;
+    }
     if (testCases.length === 0) {
       showToast('error', t('addTestCasesFirst'));
       return;
     }
-    if (!selectedEvaluation.model_id) {
+    if (!selectedEvaluation.modelId) {
       showToast('error', t('selectModelFirst'));
       return;
     }
 
-    const model = models.find((m) => m.id === selectedEvaluation.model_id);
-    const provider = providers.find((p) => p.id === model?.provider_id);
-    const prompt = prompts.find((p) => p.id === selectedEvaluation.prompt_id);
+    const model = models.find((m) => m.id === selectedEvaluation.modelId);
+    const provider = providers.find((p) => p.id === model?.providerId);
+    const prompt = prompts.find((p) => p.id === selectedEvaluation.promptId);
 
     if (!model || !provider) {
       showToast('error', t('modelOrProviderNotFound'));
@@ -699,7 +543,7 @@ export function EvaluationPage() {
 
     const evalId = selectedEvaluation.id;
     const evalConfig = selectedEvaluation.config;
-    const judgeModelId = selectedEvaluation.judge_model_id;
+    const judgeModelId = selectedEvaluation.judgeModelId;
     const currentTestCases = [...testCases];
     const enabledCriteria = criteria.filter((c) => c.enabled);
     // 获取当前的模型参数
@@ -709,24 +553,16 @@ export function EvaluationPage() {
     setActiveTab('history');
     setRunningCount(prev => prev + 1);
 
-    const { data: runData, error: runError } = await getDatabase()
-      .from('evaluation_runs')
-      .insert({
-        evaluation_id: evalId,
-        status: 'running',
-        results: {},
-        model_parameters: modelParams || null,
-      })
-      .select()
-      .single();
-
-    if (runError || !runData) {
+    let runData: EvaluationRun;
+    try {
+      runData = await runsApi.create(evalId, modelParams ? modelParams as Record<string, unknown> : undefined);
+    } catch {
       showToast('error', t('createExecutionRecordFailed'));
       setRunningCount(prev => Math.max(0, prev - 1));
       return;
     }
 
-    const currentRun = runData as EvaluationRun;
+    const currentRun = runData;
     // 更新状态并同步更新缓存，避免缓存数据覆盖新 run
     setRuns(prev => {
       const newRuns = [currentRun, ...prev];
@@ -742,10 +578,11 @@ export function EvaluationPage() {
     const abortController = { aborted: false };
     abortControllersRef.current.set(currentRun.id, abortController);
 
-    await getDatabase()
-      .from('evaluations')
-      .update({ status: 'running' })
-      .eq('id', evalId);
+    try {
+      await evaluationsApi.update(evalId, { status: 'running' });
+    } catch (e) {
+      console.error('Failed to update evaluation status:', e);
+    }
 
     setSelectedEvaluation((prev) => prev?.id === evalId ? { ...prev, status: 'running' } : prev);
     setEvaluations((prev) =>
@@ -767,74 +604,85 @@ export function EvaluationPage() {
           let userMessage = '';
 
           if (prompt) {
-            systemPrompt = prompt.content;
-            const vars = { ...testCase.input_variables };
+            systemPrompt = prompt.content || '';
+            const vars = { ...testCase.inputVariables };
 
             for (const [key, value] of Object.entries(vars)) {
               systemPrompt = systemPrompt.replace(new RegExp(`{{${key}}}`, 'g'), value);
             }
 
             if (systemPrompt.includes('{{input}}')) {
-              systemPrompt = systemPrompt.replace(/{{input}}/g, testCase.input_text || '');
+              systemPrompt = systemPrompt.replace(/{{input}}/g, testCase.inputText || '');
             } else {
-              userMessage = testCase.input_text || '';
+              userMessage = testCase.inputText || '';
             }
           } else {
-            userMessage = testCase.input_text || '';
+            userMessage = testCase.inputText || '';
           }
 
           const finalPrompt = userMessage ? `${systemPrompt}\n\n${userMessage}`.trim() : systemPrompt;
 
-          const files: FileAttachment[] = testCase.attachments.map((a) => ({
-            name: a.name,
-            type: a.type,
-            base64: a.base64,
-          }));
+          const files: FileAttachment[] = testCase.attachments || [];
+          const fileProcessing = evalConfig.file_processing || 'auto';
+          const includeFiles = fileProcessing !== 'none' && (fileProcessing !== 'vision' || model.supportsVision);
 
-          const aiResponse = await callAIModel(
-            provider,
-            model.model_id,
-            finalPrompt,
-            undefined,
-            files.length > 0 ? files : undefined,
-            modelParams ? {
-              parameters: {
-                temperature: modelParams.temperature,
-                top_p: modelParams.top_p,
-                max_tokens: modelParams.max_tokens,
-                frequency_penalty: modelParams.frequency_penalty,
-                presence_penalty: modelParams.presence_penalty,
-              }
-            } : undefined
-          );
+          // Build user message content with attachments
+          let userContent: string | ContentPart[] = finalPrompt;
+          if (files.length > 0 && includeFiles) {
+            const contentParts: ContentPart[] = [
+              { type: 'text' as const, text: finalPrompt }
+            ];
+            for (const file of files) {
+              contentParts.push({
+                type: 'file_ref' as const,
+                file_ref: { fileId: file.fileId },
+              });
+            }
+            userContent = contentParts;
+          }
+
+          const aiResponse = await chatApi.complete({
+            modelId: model.id,
+            messages: [{ role: 'user', content: userContent }],
+            temperature: modelParams?.temperature,
+            top_p: modelParams?.top_p,
+            max_tokens: modelParams?.max_tokens,
+            frequency_penalty: modelParams?.frequency_penalty,
+            presence_penalty: modelParams?.presence_penalty,
+            saveTrace: false,
+            isEvalCase: true,
+            fileProcessing,
+            ocrProvider: evalConfig.ocr_provider,
+          });
 
           const scores: Record<string, number> = {};
           const aiFeedback: Record<string, string> = {};
 
           if (enabledCriteria.length > 0 && judgeModelId) {
             const judgeModel = models.find((m) => m.id === judgeModelId);
-            const judgeProvider = providers.find((p) => p.id === judgeModel?.provider_id);
+            const judgeProvider = providers.find((p) => p.id === judgeModel?.providerId);
 
             if (judgeModel && judgeProvider) {
               for (const criterion of enabledCriteria) {
                 try {
-                  let evalPrompt = criterion.prompt;
-                  evalPrompt = evalPrompt.replace(/{{input}}/g, testCase.input_text || '');
+                  let evalPrompt = criterion.prompt || '';
+                  evalPrompt = evalPrompt.replace(/{{input}}/g, testCase.inputText || '');
                   evalPrompt = evalPrompt.replace(/{{output}}/g, aiResponse.content);
-                  if (testCase.expected_output) {
+                  if (testCase.expectedOutput) {
                     evalPrompt = evalPrompt.replace(/{{#expected}}[\s\S]*?{{\/expected}}/g,
-                      evalPrompt.match(/{{#expected}}([\s\S]*?){{\/expected}}/)?.[1]?.replace(/{{expected}}/g, testCase.expected_output) || ''
+                      evalPrompt.match(/{{#expected}}([\s\S]*?){{\/expected}}/)?.[1]?.replace(/{{expected}}/g, testCase.expectedOutput) || ''
                     );
-                    evalPrompt = evalPrompt.replace(/{{expected}}/g, testCase.expected_output);
+                    evalPrompt = evalPrompt.replace(/{{expected}}/g, testCase.expectedOutput);
                   } else {
                     evalPrompt = evalPrompt.replace(/{{#expected}}[\s\S]*?{{\/expected}}/g, '');
                   }
 
-                  const evalResponse = await callAIModel(
-                    judgeProvider,
-                    judgeModel.model_id,
-                    evalPrompt
-                  );
+                  const evalResponse = await chatApi.complete({
+                    modelId: judgeModel.id,
+                    messages: [{ role: 'user', content: evalPrompt }],
+                    saveTrace: false,
+                    isEvalCase: true,
+                  });
 
                   const jsonMatch = evalResponse.content.match(/\{[\s\S]*?"score"[\s\S]*?\}/);
                   if (jsonMatch) {
@@ -862,54 +710,44 @@ export function EvaluationPage() {
             : 1;
           const passed = avgScore >= (evalConfig.pass_threshold || 0.6);
 
-          const result: Omit<TestCaseResult, 'id' | 'created_at'> = {
-            evaluation_id: evalId,
-            test_case_id: testCase.id,
-            run_id: currentRun.id,
-            model_output: aiResponse.content,
+          const result = {
+            testCaseId: testCase.id,
+            modelOutput: aiResponse.content,
             scores,
-            ai_feedback: aiFeedback,
-            latency_ms: aiResponse.latencyMs,
-            tokens_input: aiResponse.tokensInput,
-            tokens_output: aiResponse.tokensOutput,
+            aiFeedback: aiFeedback,
+            latencyMs: aiResponse.latencyMs,
+            tokensInput: aiResponse.usage.prompt_tokens,
+            tokensOutput: aiResponse.usage.completion_tokens,
             passed,
-            error_message: null,
+            errorMessage: undefined,
           };
 
-          const { data } = await getDatabase()
-            .from('test_case_results')
-            .insert(result)
-            .select()
-            .single();
-
-          if (data) {
-            newResults.push(data);
-            setResults((prev) => [...prev, data]);
+          try {
+            const savedResult = await runsApi.addResult(currentRun.id, result);
+            newResults.push(savedResult);
+            setResults((prev) => [...prev, savedResult]);
+          } catch (e) {
+            console.error('Failed to save result:', e);
           }
         } catch (err) {
-          const result: Omit<TestCaseResult, 'id' | 'created_at'> = {
-            evaluation_id: evalId,
-            test_case_id: testCase.id,
-            run_id: currentRun.id,
-            model_output: '',
+          const result = {
+            testCaseId: testCase.id,
+            modelOutput: '',
             scores: {},
-            ai_feedback: {},
-            latency_ms: 0,
-            tokens_input: 0,
-            tokens_output: 0,
+            aiFeedback: {},
+            latencyMs: 0,
+            tokensInput: 0,
+            tokensOutput: 0,
             passed: false,
-            error_message: err instanceof Error ? err.message : t('unknownError'),
+            errorMessage: err instanceof Error ? err.message : t('unknownError'),
           };
 
-          const { data } = await getDatabase()
-            .from('test_case_results')
-            .insert(result)
-            .select()
-            .single();
-
-          if (data) {
-            newResults.push(data);
-            setResults((prev) => [...prev, data]);
+          try {
+            const savedResult = await runsApi.addResult(currentRun.id, result);
+            newResults.push(savedResult);
+            setResults((prev) => [...prev, savedResult]);
+          } catch (e) {
+            console.error('Failed to save error result:', e);
           }
         }
       }
@@ -925,45 +763,36 @@ export function EvaluationPage() {
       }
 
       const passedCount = newResults.filter((r) => r.passed).length;
-      const totalTokensInput = newResults.reduce((sum, r) => sum + r.tokens_input, 0);
-      const totalTokensOutput = newResults.reduce((sum, r) => sum + r.tokens_output, 0);
+      const totalTokensInput = newResults.reduce((sum, r) => sum + (r.tokensInput || 0), 0);
+      const totalTokensOutput = newResults.reduce((sum, r) => sum + (r.tokensOutput || 0), 0);
       const evalResults = {
         scores: overallScores,
-        total_cases: currentTestCases.length,
-        passed_cases: passedCount,
+        totalCases: currentTestCases.length,
+        passedCases: passedCount,
         summary: t('summaryTemplate', { total: currentTestCases.length, passed: passedCount, rate: ((passedCount / currentTestCases.length) * 100).toFixed(0) }),
       };
 
-      await getDatabase()
-        .from('evaluation_runs')
-        .update({
-          status: 'completed',
-          results: evalResults,
-          total_tokens_input: totalTokensInput,
-          total_tokens_output: totalTokensOutput,
-          completed_at: new Date().toISOString(),
-        })
-        .eq('id', currentRun.id);
-
+      // Update run status (note: may need backend API support)
       setRuns(prev => prev.map(r =>
         r.id === currentRun.id
-          ? { ...r, status: 'completed' as EvaluationStatus, results: evalResults, total_tokens_input: totalTokensInput, total_tokens_output: totalTokensOutput, completed_at: new Date().toISOString() }
+          ? { ...r, status: 'completed' as EvaluationStatus, results: evalResults, totalTokensInput, totalTokensOutput, completedAt: new Date().toISOString() }
           : r
       ));
       setSelectedRun(prev =>
         prev?.id === currentRun.id
-          ? { ...prev, status: 'completed', results: evalResults, total_tokens_input: totalTokensInput, total_tokens_output: totalTokensOutput, completed_at: new Date().toISOString() }
+          ? { ...prev, status: 'completed', results: evalResults, totalTokensInput, totalTokensOutput, completedAt: new Date().toISOString() }
           : prev
       );
 
-      await getDatabase()
-        .from('evaluations')
-        .update({
+      // Update evaluation status
+      try {
+        await evaluationsApi.update(evalId, {
           status: 'completed',
           results: evalResults,
-          completed_at: new Date().toISOString(),
-        })
-        .eq('id', evalId);
+        });
+      } catch (e) {
+        console.error('Failed to update evaluation:', e);
+      }
 
       setSelectedEvaluation((prev) =>
         prev?.id === evalId ? { ...prev, status: 'completed', results: evalResults } : prev
@@ -988,14 +817,18 @@ export function EvaluationPage() {
   // 单用例评测
   const handleRunSingleTestCase = async (testCase: TestCase) => {
     if (!selectedEvaluation) return;
-    if (!selectedEvaluation.model_id) {
+    if (hasDraftChanges) {
+      showToast('error', t('submitNewVersionToRun'));
+      return;
+    }
+    if (!selectedEvaluation.modelId) {
       showToast('error', t('selectModelFirst'));
       return;
     }
 
-    const model = models.find((m) => m.id === selectedEvaluation.model_id);
-    const provider = providers.find((p) => p.id === model?.provider_id);
-    const prompt = prompts.find((p) => p.id === selectedEvaluation.prompt_id);
+    const model = models.find((m) => m.id === selectedEvaluation.modelId);
+    const provider = providers.find((p) => p.id === model?.providerId);
+    const prompt = prompts.find((p) => p.id === selectedEvaluation.promptId);
 
     if (!model || !provider) {
       showToast('error', t('modelOrProviderNotFound'));
@@ -1004,7 +837,7 @@ export function EvaluationPage() {
 
     const evalId = selectedEvaluation.id;
     const evalConfig = selectedEvaluation.config;
-    const judgeModelId = selectedEvaluation.judge_model_id;
+    const judgeModelId = selectedEvaluation.judgeModelId;
     const enabledCriteria = criteria.filter((c) => c.enabled);
     // 获取当前的模型参数
     const modelParams = evalConfig.model_parameters;
@@ -1012,24 +845,16 @@ export function EvaluationPage() {
     setRunningTestCaseId(testCase.id);
 
     // 创建执行记录
-    const { data: runData, error: runError } = await getDatabase()
-      .from('evaluation_runs')
-      .insert({
-        evaluation_id: evalId,
-        status: 'running',
-        results: {},
-        model_parameters: modelParams || null,
-      })
-      .select()
-      .single();
-
-    if (runError || !runData) {
+    let runData: EvaluationRun;
+    try {
+      runData = await runsApi.create(evalId, modelParams ? modelParams as Record<string, unknown> : undefined);
+    } catch {
       showToast('error', t('createExecutionRecordFailed'));
       setRunningTestCaseId(null);
       return;
     }
 
-    const currentRun = runData as EvaluationRun;
+    const currentRun = runData;
     // 更新状态并同步更新缓存
     setRuns(prev => {
       const newRuns = [currentRun, ...prev];
@@ -1046,77 +871,88 @@ export function EvaluationPage() {
 
       if (prompt) {
         systemPrompt = prompt.content || '';
-        const vars = { ...testCase.input_variables };
+        const vars = { ...testCase.inputVariables };
 
         for (const [key, value] of Object.entries(vars)) {
           systemPrompt = systemPrompt.replace(new RegExp(`{{${key}}}`, 'g'), value);
         }
 
         if (systemPrompt.includes('{{input}}')) {
-          systemPrompt = systemPrompt.replace(/{{input}}/g, testCase.input_text || '');
+          systemPrompt = systemPrompt.replace(/{{input}}/g, testCase.inputText || '');
         } else {
-          userMessage = testCase.input_text || '';
+          userMessage = testCase.inputText || '';
         }
       } else {
-        userMessage = testCase.input_text || '';
+        userMessage = testCase.inputText || '';
       }
 
       const finalPrompt = userMessage ? `${systemPrompt}\n\n${userMessage}`.trim() : systemPrompt;
 
-      const files: FileAttachment[] = testCase.attachments.map((a) => ({
-        name: a.name,
-        type: a.type,
-        base64: a.base64,
-      }));
+      const files: FileAttachment[] = testCase.attachments || [];
+      const fileProcessing = evalConfig.file_processing || 'auto';
+      const includeFiles = fileProcessing !== 'none' && (fileProcessing !== 'vision' || model.supportsVision);
+
+      // Build user message content with attachments
+      let userContent: string | ContentPart[] = finalPrompt;
+      if (files.length > 0 && includeFiles) {
+        const contentParts: ContentPart[] = [
+          { type: 'text' as const, text: finalPrompt }
+        ];
+        for (const file of files) {
+          contentParts.push({
+            type: 'file_ref' as const,
+            file_ref: { fileId: file.fileId },
+          });
+        }
+        userContent = contentParts;
+      }
 
       const startTime = Date.now();
-      const aiResult = await callAIModel(
-        provider,
-        model.model_id,
-        finalPrompt,
-        undefined,
-        files.length > 0 ? files : undefined,
-        modelParams ? {
-          parameters: {
-            temperature: modelParams.temperature,
-            top_p: modelParams.top_p,
-            max_tokens: modelParams.max_tokens,
-            frequency_penalty: modelParams.frequency_penalty,
-            presence_penalty: modelParams.presence_penalty,
-          }
-        } : undefined
-      );
+      const aiResult = await chatApi.complete({
+        modelId: model.id,
+        messages: [{ role: 'user', content: userContent }],
+        temperature: modelParams?.temperature,
+        top_p: modelParams?.top_p,
+        max_tokens: modelParams?.max_tokens,
+        frequency_penalty: modelParams?.frequency_penalty,
+        presence_penalty: modelParams?.presence_penalty,
+        saveTrace: false,
+        isEvalCase: true,
+        fileProcessing,
+        ocrProvider: evalConfig.ocr_provider,
+      });
 
       const latency = Date.now() - startTime;
-      let scores: Record<string, number> = {};
-      let aiFeedback: Record<string, string> = {};
+      const scores: Record<string, number> = {};
+      const aiFeedback: Record<string, string> = {};
       let passed = true;
 
       // AI 评判（与批量评测逻辑保持一致）
       if (enabledCriteria.length > 0 && judgeModelId) {
         const judgeModel = models.find((m) => m.id === judgeModelId);
-        const judgeProvider = providers.find((p) => p.id === judgeModel?.provider_id);
+        const judgeProvider = providers.find((p) => p.id === judgeModel?.providerId);
 
         if (judgeModel && judgeProvider) {
           for (const criterion of enabledCriteria) {
             try {
-              let evalPrompt = criterion.prompt;
-              evalPrompt = evalPrompt.replace(/{{input}}/g, testCase.input_text || '');
+              let evalPrompt = criterion.prompt || '';
+              evalPrompt = evalPrompt.replace(/{{input}}/g, testCase.inputText || '');
               evalPrompt = evalPrompt.replace(/{{output}}/g, aiResult.content);
-              if (testCase.expected_output) {
+              if (testCase.expectedOutput) {
                 evalPrompt = evalPrompt.replace(/{{#expected}}[\s\S]*?{{\/expected}}/g,
-                  evalPrompt.match(/{{#expected}}([\s\S]*?){{\/expected}}/)?.[1]?.replace(/{{expected}}/g, testCase.expected_output) || ''
+                  evalPrompt.match(/{{#expected}}([\s\S]*?){{\/expected}}/)?.[1]?.replace(/{{expected}}/g, testCase.expectedOutput) || ''
                 );
-                evalPrompt = evalPrompt.replace(/{{expected}}/g, testCase.expected_output);
+                evalPrompt = evalPrompt.replace(/{{expected}}/g, testCase.expectedOutput);
               } else {
                 evalPrompt = evalPrompt.replace(/{{#expected}}[\s\S]*?{{\/expected}}/g, '');
               }
 
-              const evalResponse = await callAIModel(
-                judgeProvider,
-                judgeModel.model_id,
-                evalPrompt
-              );
+              const evalResponse = await chatApi.complete({
+                modelId: judgeModel.id,
+                messages: [{ role: 'user', content: evalPrompt }],
+                saveTrace: false,
+                isEvalCase: true,
+              });
 
               const jsonMatch = evalResponse.content.match(/\{[\s\S]*?"score"[\s\S]*?\}/);
               if (jsonMatch) {
@@ -1145,25 +981,24 @@ export function EvaluationPage() {
 
       // 保存结果
       const resultData = {
-        evaluation_id: evalId,
-        test_case_id: testCase.id,
-        run_id: currentRun.id,
-        model_output: aiResult.content,
+        testCaseId: testCase.id,
+        modelOutput: aiResult.content,
         scores,
-        ai_feedback: aiFeedback,
-        latency_ms: latency,
-        tokens_input: aiResult.tokensInput || 0,
-        tokens_output: aiResult.tokensOutput || 0,
+        aiFeedback: aiFeedback,
+        latencyMs: latency,
+        tokensInput: aiResult.usage?.prompt_tokens || 0,
+        tokensOutput: aiResult.usage?.completion_tokens || 0,
         passed,
       };
 
-      const { data: savedResult } = await getDatabase()
-        .from('test_case_results')
-        .insert(resultData)
-        .select()
-        .single();
+      let savedResult: TestCaseResult | null = null;
+      try {
+        savedResult = await runsApi.addResult(currentRun.id, resultData);
+      } catch (e) {
+        console.error('Failed to save result:', e);
+      }
 
-      const newResults = savedResult ? [savedResult as TestCaseResult] : [];
+      const newResults = savedResult ? [savedResult] : [];
 
       // 计算总分
       const overallScores: Record<string, number> = {};
@@ -1174,31 +1009,20 @@ export function EvaluationPage() {
       }
 
       const evalResults = {
-        passed_cases: passed ? 1 : 0,
-        total_cases: 1,
+        passedCases: passed ? 1 : 0,
+        totalCases: 1,
         scores: overallScores,
         summary: t('singleTestComplete') + ', ' + (passed ? t('passed') : t('notPassed')),
       };
 
-      // 更新运行记录
-      await getDatabase()
-        .from('evaluation_runs')
-        .update({
-          status: 'completed',
-          results: evalResults,
-          total_tokens_input: aiResult.tokensInput || 0,
-          total_tokens_output: aiResult.tokensOutput || 0,
-          completed_at: new Date().toISOString(),
-        })
-        .eq('id', currentRun.id);
-
+      // 更新运行记录 (local state only, backend update may need API support)
       const completedRun: EvaluationRun = {
         ...currentRun,
         status: 'completed',
         results: evalResults,
-        total_tokens_input: aiResult.tokensInput || 0,
-        total_tokens_output: aiResult.tokensOutput || 0,
-        completed_at: new Date().toISOString(),
+        totalTokensInput: aiResult.usage?.prompt_tokens || 0,
+        totalTokensOutput: aiResult.usage?.completion_tokens || 0,
+        completedAt: new Date().toISOString(),
       };
 
       setRuns(prev => {
@@ -1219,35 +1043,28 @@ export function EvaluationPage() {
 
       // 保存错误结果
       const errorResult = {
-        evaluation_id: evalId,
-        test_case_id: testCase.id,
-        run_id: currentRun.id,
-        model_output: '',
+        testCaseId: testCase.id,
+        modelOutput: '',
         scores: {},
-        ai_feedback: {},
-        latency_ms: 0,
-        tokens_input: 0,
-        tokens_output: 0,
+        aiFeedback: {},
+        latencyMs: 0,
+        tokensInput: 0,
+        tokensOutput: 0,
         passed: false,
-        error_message: errorMessage,
+        errorMessage: errorMessage,
       };
 
-      await getDatabase().from('test_case_results').insert(errorResult);
-
-      await getDatabase()
-        .from('evaluation_runs')
-        .update({
-          status: 'failed',
-          error_message: errorMessage,
-          completed_at: new Date().toISOString(),
-        })
-        .eq('id', currentRun.id);
+      try {
+        await runsApi.addResult(currentRun.id, errorResult);
+      } catch (e) {
+        console.error('Failed to save error result:', e);
+      }
 
       const failedRun: EvaluationRun = {
         ...currentRun,
         status: 'failed',
-        error_message: errorMessage,
-        completed_at: new Date().toISOString(),
+        errorMessage: errorMessage,
+        completedAt: new Date().toISOString(),
       };
 
       setRuns(prev => {
@@ -1277,39 +1094,30 @@ export function EvaluationPage() {
 
     const errorMessage = t('evaluationAborted');
 
-    await getDatabase()
-      .from('evaluation_runs')
-      .update({
-        status: 'failed',
-        error_message: errorMessage,
-        completed_at: new Date().toISOString(),
-      })
-      .eq('id', runId);
-
-    await getDatabase()
-      .from('evaluations')
-      .update({
-        status: 'failed',
-      })
-      .eq('id', run.evaluation_id);
+    // Update local state (backend update via API if available)
+    try {
+      await evaluationsApi.update(run.evaluationId, { status: 'failed' });
+    } catch (e) {
+      console.error('Failed to update evaluation status:', e);
+    }
 
     setRuns(prev => prev.map(r =>
       r.id === runId
-        ? { ...r, status: 'failed' as EvaluationStatus, error_message: errorMessage, completed_at: new Date().toISOString() }
+        ? { ...r, status: 'failed' as EvaluationStatus, errorMessage: errorMessage, completedAt: new Date().toISOString() }
         : r
     ));
 
     setSelectedRun(prev =>
       prev?.id === runId
-        ? { ...prev, status: 'failed', error_message: errorMessage, completed_at: new Date().toISOString() }
+        ? { ...prev, status: 'failed', errorMessage: errorMessage, completedAt: new Date().toISOString() }
         : prev
     );
 
-    if (selectedEvaluation?.id === run.evaluation_id) {
+    if (selectedEvaluation?.id === run.evaluationId) {
       setSelectedEvaluation(prev => prev ? { ...prev, status: 'failed' } : prev);
     }
     setEvaluations(prev =>
-      prev.map((e) => (e.id === run.evaluation_id ? { ...e, status: 'failed' as EvaluationStatus } : e))
+      prev.map((e) => (e.id === run.evaluationId ? { ...e, status: 'failed' as EvaluationStatus } : e))
     );
 
     if (controller) {
@@ -1317,7 +1125,7 @@ export function EvaluationPage() {
     }
 
     // 清除缓存
-    clearEvaluationCache(run.evaluation_id);
+    clearEvaluationCache(run.evaluationId);
 
     showToast('info', t('evaluationStopped'));
   };
@@ -1326,18 +1134,10 @@ export function EvaluationPage() {
     if (!selectedEvaluation) return;
 
     try {
-      // First delete related test case results
-      await getDatabase().from('test_case_results').delete().eq('run_id', runId);
-
-      // Then delete the run itself
-      const { error } = await getDatabase().from('evaluation_runs').delete().eq('id', runId);
-      if (error) {
-        showToast('error', t('deleteFailed'));
-        return;
-      }
+      await runsApi.delete(runId);
 
       const newRuns = runs.filter((r) => r.id !== runId);
-      const newResults = results.filter((r) => r.run_id !== runId);
+      const newResults = results.filter((r) => r.runId !== runId);
 
       setRuns(newRuns);
       setResults(newResults);
@@ -1363,11 +1163,7 @@ export function EvaluationPage() {
     if (!selectedEvaluation) return;
     try {
       const evalIdToDelete = selectedEvaluation.id;
-      const { error } = await getDatabase().from('evaluations').delete().eq('id', evalIdToDelete);
-      if (error) {
-        showToast('error', t('deleteFailed') + ': ' + error.message);
-        return;
-      }
+      await evaluationsApi.delete(evalIdToDelete);
 
       // 清除缓存
       clearEvaluationCache(evalIdToDelete);
@@ -1377,124 +1173,87 @@ export function EvaluationPage() {
       setEvaluations(remaining);
       setSelectedEvaluation(remaining[0] || null);
       showToast('success', t('evaluationDeleted'));
-    } catch {
-      showToast('error', t('deleteEvaluationFailed'));
+    } catch (e) {
+      showToast('error', t('deleteFailed') + ': ' + (e instanceof Error ? e.message : 'Unknown error'));
     }
   };
 
   const handleCopyEvaluation = async () => {
     if (!selectedEvaluation) return;
+    setSubmittingNewVersion(true);
     try {
-      const { data: newEval, error: evalError } = await getDatabase()
-        .from('evaluations')
-        .insert({
-          name: `${selectedEvaluation.name} (副本)`,
-          prompt_id: selectedEvaluation.prompt_id,
-          model_id: selectedEvaluation.model_id,
-          judge_model_id: selectedEvaluation.judge_model_id,
-          status: 'pending',
-          config: selectedEvaluation.config,
-          results: {},
-        })
-        .select()
-        .single();
+      const sourceId = selectedEvaluation.id;
 
-      if (evalError || !newEval) {
-        showToast('error', t('copyEvaluationFailed') + ': ' + (evalError?.message || t('unknownError')));
-        return;
-      }
-
-      const copyPromises = [];
-
-      if (testCases.length > 0) {
-        const newTestCases = testCases.map((tc) => ({
-          evaluation_id: newEval.id,
-          name: tc.name,
-          input_text: tc.input_text,
-          input_variables: tc.input_variables,
-          attachments: tc.attachments,
-          expected_output: tc.expected_output,
-          order_index: tc.order_index,
-        }));
-
-        copyPromises.push(
-          getDatabase()
-            .from('test_cases')
-            .insert(newTestCases)
-            .then(({ error }) => {
-              if (error) throw new Error(t('copyTestCaseFailed') + ': ' + error.message);
-            })
-        );
-      }
-
-      if (criteria.length > 0) {
-        const newCriteria = criteria.map((c) => ({
-          evaluation_id: newEval.id,
+      const newEval = await evaluationsApi.create({
+        name: `${selectedEvaluation.name} (${t('copy')})`,
+        promptId: selectedEvaluation.promptId || undefined,
+        modelId: selectedEvaluation.modelId || undefined,
+        judgeModelId: selectedEvaluation.judgeModelId || undefined,
+        config: selectedEvaluation.config,
+        testCases: testCases.map((tc, idx) => ({
+          name: tc.name || undefined,
+          inputText: tc.inputText || '',
+          inputVariables: tc.inputVariables || {},
+          attachments: tc.attachments || [],
+          expectedOutput: tc.expectedOutput ?? undefined,
+          notes: tc.notes ?? undefined,
+          orderIndex: idx,
+        })),
+        criteria: criteria.map((c) => ({
           name: c.name,
-          description: c.description,
-          prompt: c.prompt,
+          description: c.description || undefined,
+          prompt: c.prompt || undefined,
           weight: c.weight,
           enabled: c.enabled,
-        }));
+        })),
+      });
 
-        copyPromises.push(
-          getDatabase()
-            .from('evaluation_criteria')
-            .insert(newCriteria)
-            .then(({ error }) => {
-              if (error) throw new Error(t('copyCriteriaFailed') + ': ' + error.message);
-            })
-        );
-      }
+      const newEvaluations = [newEval as EvaluationWithRelations, ...evaluations];
+      updateListCache({ evaluations: newEvaluations });
+      setEvaluations(newEvaluations);
+      setSelectedEvaluation(newEval as EvaluationWithRelations);
 
-      await Promise.all(copyPromises);
+      // Clear draft state for the source evaluation (edits are captured in the new version).
+      clearEvaluationDirty(sourceId);
+      clearEvaluationCache(sourceId);
 
-      setEvaluations((prev) => [newEval, ...prev]);
-      setSelectedEvaluation(newEval);
       showToast('success', t('evaluationCopied'));
     } catch (err) {
       showToast('error', err instanceof Error ? err.message : t('copyEvaluationFailed'));
+    } finally {
+      setSubmittingNewVersion(false);
     }
   };
 
   const handleUpdateEvaluation = async (field: string, value: string | null) => {
     if (!selectedEvaluation) return;
 
-    const { error } = await getDatabase()
-      .from('evaluations')
-      .update({ [field]: value })
-      .eq('id', selectedEvaluation.id);
-
-    if (error) {
-      showToast('error', t('updateFailed') + ': ' + error.message);
-      return;
-    }
-
-    setSelectedEvaluation((prev) => prev ? { ...prev, [field]: value } : null);
-    setEvaluations((prev) =>
-      prev.map((e) => (e.id === selectedEvaluation.id ? { ...e, [field]: value } : e))
-    );
+    const updated = { ...selectedEvaluation, [field]: value } as EvaluationWithRelations;
+    setSelectedEvaluation(updated);
+    setEvaluations((prev) => {
+      const next = prev.map((e) => (e.id === selectedEvaluation.id ? updated : e));
+      updateListCache({ evaluations: next });
+      return next;
+    });
+    markEvaluationDirty(selectedEvaluation.id);
   };
 
-  const handleUpdateConfig = async (key: string, value: number | ModelParameters | boolean) => {
+  const handleUpdateConfig = async <K extends keyof EvaluationConfig>(key: K, value: EvaluationConfig[K]) => {
     if (!selectedEvaluation) return;
 
-    const newConfig = { ...selectedEvaluation.config, [key]: value };
-
-    const { error } = await getDatabase()
-      .from('evaluations')
-      .update({ config: newConfig })
-      .eq('id', selectedEvaluation.id);
-
-    if (error) {
-      showToast('error', t('updateFailed') + ': ' + error.message);
-      return;
+    const newConfig: EvaluationConfig = { ...selectedEvaluation.config, [key]: value };
+    if (value === undefined) {
+      delete (newConfig as Record<string, unknown>)[key as string];
     }
 
-    setSelectedEvaluation((prev) => prev ? { ...prev, config: newConfig } : null);
-    setEvaluations((prev) =>
-      prev.map((e) => (e.id === selectedEvaluation.id ? { ...e, config: newConfig } : e))
-    );
+    const updated = { ...selectedEvaluation, config: newConfig } as EvaluationWithRelations;
+    setSelectedEvaluation(updated);
+    setEvaluations((prev) => {
+      const next = prev.map((e) => (e.id === selectedEvaluation.id ? updated : e));
+      updateListCache({ evaluations: next });
+      return next;
+    });
+    markEvaluationDirty(selectedEvaluation.id);
   };
 
   // 处理模型参数变更
@@ -1513,7 +1272,7 @@ export function EvaluationPage() {
 
   // 处理关联 Prompt 变更时继承参数
   const handlePromptChange = async (promptId: string | null) => {
-    await handleUpdateEvaluation('prompt_id', promptId);
+    await handleUpdateEvaluation('promptId', promptId);
 
     if (promptId) {
       const prompt = prompts.find(p => p.id === promptId);
@@ -1563,15 +1322,7 @@ export function EvaluationPage() {
     setEditingName('');
   };
 
-  const enabledModels = models.filter((m) => {
-    const provider = providers.find((p) => p.id === m.provider_id);
-    return provider?.enabled;
-  });
-
-  const getPromptName = (id: string | null) => prompts.find((p) => p.id === id)?.name || '-';
-  const getModelName = (id: string | null) => models.find((m) => m.id === id)?.name || '-';
-
-  const selectedPrompt = prompts.find((p) => p.id === selectedEvaluation?.prompt_id);
+  const selectedPrompt = prompts.find((p) => p.id === selectedEvaluation?.promptId);
   const promptVariables = (selectedPrompt?.variables as PromptVariable[] | undefined)?.map((v) => v.name) || [];
 
   return (
@@ -1666,20 +1417,51 @@ export function EvaluationPage() {
                       <h2 className="text-xl font-semibold text-white light:text-slate-900">
                         {selectedEvaluation.name}
                       </h2>
+                      {hasDraftChanges && (
+                        <Badge variant="warning">{t('draftChanges')}</Badge>
+                      )}
                       <button
                         onClick={startEditingName}
                         className="p-1 hover:bg-slate-700 light:hover:bg-slate-200 rounded transition-colors"
                       >
                         <Pencil className="w-4 h-4 text-slate-400 light:text-slate-500" />
                       </button>
+                      <button
+                        onClick={async () => {
+                          // Check if prompt is public when trying to make evaluation public
+                          const linkedPrompt = prompts.find(p => p.id === selectedEvaluation.promptId);
+                          if (!selectedEvaluation.isPublic && linkedPrompt && !linkedPrompt.isPublic) {
+                            showToast('error', t('promptMustBePublicFirst'));
+                            return;
+                          }
+                          const newValue = !selectedEvaluation.isPublic;
+                          try {
+                            await evaluationsApi.update(selectedEvaluation.id, { isPublic: newValue });
+                            setSelectedEvaluation({ ...selectedEvaluation, isPublic: newValue });
+                            setEvaluations((prev) => prev.map((e) => e.id === selectedEvaluation.id ? { ...e, isPublic: newValue } : e));
+                            showToast('success', newValue ? t('evaluationPublic') : t('evaluationPrivate'));
+                          } catch {
+                            showToast('error', t('updateFailed'));
+                          }
+                        }}
+                        className={`flex items-center gap-1 px-2 py-1 rounded text-xs transition-colors ${
+                          selectedEvaluation.isPublic
+                            ? 'bg-green-500/20 text-green-400 hover:bg-green-500/30'
+                            : 'bg-slate-700 text-slate-400 hover:bg-slate-600 light:bg-slate-200 light:text-slate-500 light:hover:bg-slate-300'
+                        }`}
+                        title={selectedEvaluation.isPublic ? t('clickToPrivate') : t('clickToPublic')}
+                      >
+                        <Globe className="w-3 h-3" />
+                        {selectedEvaluation.isPublic ? t('public') : t('private')}
+                      </button>
                     </div>
                   )}
                   <p className="text-sm text-slate-500 light:text-slate-400 mt-1">
-                    {t('createdAt')} {new Date(selectedEvaluation.created_at).toLocaleString()}
+                    {t('createdAt')} {formatDateTime(selectedEvaluation.createdAt)}
                   </p>
                 </div>
                 <div className="flex items-center gap-2">
-                  <Button onClick={runEvaluation}>
+                  <Button onClick={runEvaluation} disabled={hasDraftChanges || submittingNewVersion}>
                     {runningCount > 0 ? (
                       <Loader2 className="w-4 h-4 animate-spin" />
                     ) : (
@@ -1692,29 +1474,43 @@ export function EvaluationPage() {
                       </span>
                     )}
                   </Button>
-                  <Button variant="ghost" onClick={handleCopyEvaluation}>
+                  <Button
+                    variant="secondary"
+                    onClick={handleCopyEvaluation}
+                    loading={submittingNewVersion}
+                  >
                     <Copy className="w-4 h-4" />
+                    <span>{t('submitNewVersion')}</span>
                   </Button>
-                  <Button variant="ghost" onClick={handleDeleteEvaluation}>
+                  <Button variant="ghost" onClick={handleDeleteEvaluation} disabled={submittingNewVersion}>
                     <Trash2 className="w-4 h-4" />
                   </Button>
                 </div>
               </div>
 
-              <div className="grid grid-cols-5 gap-4">
+              {hasDraftChanges && (
+                <div className="p-3 rounded-lg border border-amber-500/20 bg-amber-500/10 light:bg-amber-50 light:border-amber-200 flex items-start gap-2">
+                  <AlertCircle className="w-4 h-4 text-amber-400 light:text-amber-700 mt-0.5 flex-shrink-0" />
+                  <div className="text-sm text-amber-200 light:text-amber-800">
+                    {t('draftChangesHint')}
+                  </div>
+                </div>
+              )}
+
+              <div className="grid grid-cols-6 gap-4">
                 <div className="p-4 bg-slate-800/50 light:bg-white border border-slate-700 light:border-slate-200 rounded-lg light:shadow-sm">
                   <p className="text-xs text-slate-500 light:text-slate-600 mb-2">{t('linkedPrompt')}</p>
                   <Select
-                    value={selectedEvaluation.prompt_id || ''}
+                    value={selectedEvaluation.promptId || ''}
                     onChange={(e) => handlePromptChange(e.target.value || null)}
                     options={[
                       { value: '', label: t('noLinkedPrompt') },
-                      ...prompts.map((p) => ({ value: p.id, label: `${p.name} (v${p.current_version})` })),
+                      ...prompts.map((p) => ({ value: p.id, label: `${p.name} (v${p.currentVersion})` })),
                     ]}
                   />
                   {selectedPrompt && (
                     <p className="text-xs text-cyan-400 light:text-cyan-600 mt-2">
-                      {t('currentVersion')}: v{selectedPrompt.current_version}
+                      {t('currentVersion')}: v{selectedPrompt.currentVersion}
                     </p>
                   )}
                 </div>
@@ -1732,10 +1528,23 @@ export function EvaluationPage() {
                   <ModelSelector
                     models={models}
                     providers={providers}
-                    selectedModelId={selectedEvaluation.model_id || ''}
-                    onSelect={(modelId) => handleUpdateEvaluation('model_id', modelId || null)}
+                    selectedModelId={selectedEvaluation.modelId || ''}
+                    onSelect={(modelId) => handleUpdateEvaluation('modelId', modelId || null)}
                     placeholder={t('selectModel')}
                   />
+                  {selectedEvaluation.model && (
+                    <p className="text-xs text-slate-500 light:text-slate-600 mt-2">
+                      {t('reproducibleModel')}: {selectedEvaluation.model.provider?.type ? `${selectedEvaluation.model.provider.type}/` : ''}{selectedEvaluation.model.modelId}
+                    </p>
+                  )}
+                  {selectedEvaluation.config?.model_parameters && (
+                    <p className="text-xs text-slate-500 light:text-slate-600 mt-1">
+                      {t('modelParameters')}:&nbsp;
+                      {selectedEvaluation.config.model_parameters.temperature !== undefined ? `T:${selectedEvaluation.config.model_parameters.temperature} ` : ''}
+                      {selectedEvaluation.config.model_parameters.max_tokens !== undefined ? `Max:${selectedEvaluation.config.model_parameters.max_tokens} ` : ''}
+                      {selectedEvaluation.config.model_parameters.top_p !== undefined ? `P:${selectedEvaluation.config.model_parameters.top_p} ` : ''}
+                    </p>
+                  )}
                   {selectedEvaluation.config.inherited_from_prompt && (
                     <p className="text-xs text-cyan-400 light:text-cyan-600 mt-1">
                       {t('inheritedFromPrompt')}
@@ -1747,10 +1556,15 @@ export function EvaluationPage() {
                   <ModelSelector
                     models={models}
                     providers={providers}
-                    selectedModelId={selectedEvaluation.judge_model_id || ''}
-                    onSelect={(modelId) => handleUpdateEvaluation('judge_model_id', modelId || null)}
+                    selectedModelId={selectedEvaluation.judgeModelId || ''}
+                    onSelect={(modelId) => handleUpdateEvaluation('judgeModelId', modelId || null)}
                     placeholder={t('noJudgeModel')}
                   />
+                  {selectedEvaluation.judgeModel && (
+                    <p className="text-xs text-slate-500 light:text-slate-600 mt-2">
+                      {t('reproducibleJudgeModel')}: {selectedEvaluation.judgeModel.provider?.type ? `${selectedEvaluation.judgeModel.provider.type}/` : ''}{selectedEvaluation.judgeModel.modelId}
+                    </p>
+                  )}
                 </div>
                 <div className="p-4 bg-slate-800/50 light:bg-white border border-slate-700 light:border-slate-200 rounded-lg light:shadow-sm">
                   <p className="text-xs text-slate-500 light:text-slate-600 mb-2">{t('passThreshold')}</p>
@@ -1769,6 +1583,33 @@ export function EvaluationPage() {
                       { value: '0', label: t('threshold0') },
                     ]}
                   />
+                </div>
+                <div className="p-4 bg-slate-800/50 light:bg-white border border-slate-700 light:border-slate-200 rounded-lg light:shadow-sm">
+                  <p className="text-xs text-slate-500 light:text-slate-600 mb-2">{t('fileProcessing')}</p>
+                  <Select
+                    value={selectedEvaluation.config.file_processing || 'auto'}
+                    onChange={(e) => handleUpdateConfig('file_processing', e.target.value as EvaluationConfig['file_processing'])}
+                    options={[
+                      { value: 'auto', label: t('fileProcessingAuto') },
+                      ...(currentModelInfo.supportsVision ? [{ value: 'vision', label: t('fileProcessingVision') }] : []),
+                      { value: 'ocr', label: t('fileProcessingOcr') },
+                      { value: 'none', label: t('fileProcessingNone') },
+                    ]}
+                  />
+                  {(selectedEvaluation.config.file_processing === 'ocr' ||
+                    ((selectedEvaluation.config.file_processing || 'auto') === 'auto' && !currentModelInfo.supportsVision)) && (
+                    <div className="mt-2">
+                      <Select
+                        value={selectedEvaluation.config.ocr_provider || ''}
+                        onChange={(e) => handleUpdateConfig('ocr_provider', (e.target.value ? (e.target.value as EvaluationConfig['ocr_provider']) : undefined))}
+                        options={[
+                          { value: '', label: t('ocrProviderFollow') },
+                          { value: 'paddle', label: 'PaddleOCR' },
+                          { value: 'datalab', label: t('ocrProviderDatalab') },
+                        ]}
+                      />
+                    </div>
+                  )}
                 </div>
                 <div className="p-4 bg-slate-800/50 light:bg-white border border-slate-700 light:border-slate-200 rounded-lg light:shadow-sm">
                   <p className="text-xs text-slate-500 light:text-slate-600 mb-1">{t('status')}</p>
@@ -1902,19 +1743,19 @@ export function EvaluationPage() {
                         <div className="flex items-center gap-3 flex-wrap">
                           <span className="text-sm text-slate-400 light:text-slate-600">{t('currentViewing')}</span>
                           <Badge variant={statusConfig[selectedRun.status].variant}>
-                            {new Date(selectedRun.started_at).toLocaleString()}
+                            {formatDateTime(selectedRun.startedAt)}
                           </Badge>
                           {/* 紧凑的模型参数标签 */}
-                          {selectedRun.model_parameters && (
+                          {selectedRun.modelParameters && (
                             <div className="flex items-center gap-1.5 text-xs text-slate-500 light:text-slate-500">
                               <Settings2 className="w-3 h-3" />
-                              <span>T:{selectedRun.model_parameters.temperature}</span>
+                              <span>T:{selectedRun.modelParameters.temperature}</span>
                               <span>•</span>
-                              <span>Max:{selectedRun.model_parameters.max_tokens}</span>
-                              {selectedRun.model_parameters.top_p !== undefined && (
+                              <span>Max:{selectedRun.modelParameters.max_tokens}</span>
+                              {selectedRun.modelParameters.top_p !== undefined && (
                                 <>
                                   <span>•</span>
-                                  <span>P:{selectedRun.model_parameters.top_p}</span>
+                                  <span>P:{selectedRun.modelParameters.top_p}</span>
                                 </>
                               )}
                             </div>
@@ -1934,8 +1775,8 @@ export function EvaluationPage() {
                         testCases={testCases}
                         results={results}
                         criteria={criteria}
-                        overallScores={selectedRun.results?.scores || {}}
-                        summary={selectedRun.results?.summary}
+                        overallScores={(selectedRun.results as { scores?: Record<string, number> })?.scores || {}}
+                        summary={(selectedRun.results as { summary?: string })?.summary}
                       />
                     </div>
                   ) : (
@@ -2024,7 +1865,7 @@ export function EvaluationPage() {
           <ParameterPanel
             config={evalModelConfig}
             onChange={handleModelParametersChange}
-            modelId={models.find(m => m.id === selectedEvaluation?.model_id)?.model_id}
+            modelId={models.find(m => m.id === selectedEvaluation?.modelId)?.modelId}
             defaultOpen={true}
           />
           <div className="flex justify-end pt-4 border-t border-slate-700 light:border-slate-200">

@@ -8,8 +8,10 @@ import {
 } from '../services/chat.service.js';
 import { tracesRepository } from '../repositories/traces.repository.js';
 import { AppError } from '@ssrprompt/shared';
+import { filesService } from '../services/files.service.js';
+import { ocrService } from '../services/ocr.service.js';
 
-// Content part schema for vision
+// Content part schema for vision and files
 const ContentPartSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('text'),
@@ -19,6 +21,19 @@ const ContentPartSchema = z.discriminatedUnion('type', [
     type: z.literal('image_url'),
     image_url: z.object({
       url: z.string(),
+    }),
+  }),
+  z.object({
+    type: z.literal('file'),
+    file: z.object({
+      filename: z.string(),
+      file_data: z.string(),  // data:application/pdf;base64,...
+    }),
+  }),
+  z.object({
+    type: z.literal('file_ref'),
+    file_ref: z.object({
+      fileId: z.string().uuid(),
     }),
   }),
 ]);
@@ -41,7 +56,265 @@ const ChatCompletionSchema = z.object({
   presence_penalty: z.number().min(-2).max(2).optional(),
   stream: z.boolean().optional().default(true),
   saveTrace: z.boolean().optional().default(true),
+  reasoning: z.object({
+    enabled: z.boolean(),
+    effort: z.enum(['default', 'none', 'low', 'medium', 'high']).optional(),
+  }).optional(),
+  responseFormat: z.record(z.unknown()).optional(),
+  isEvalCase: z.boolean().optional().default(false),
+  fileProcessing: z.enum(['auto', 'vision', 'ocr', 'none']).optional(),
+  ocrProvider: z.enum(['paddle', 'datalab']).optional(),
 });
+
+type IncomingChatMessage = z.infer<typeof ChatMessageSchema>;
+
+type TraceAttachment = { fileId: string; name: string; type: string; size: number };
+
+interface ExpandedMessages {
+  messages: ChatMessage[];
+  inputContent: string;
+  attachments: TraceAttachment[];
+}
+
+/**
+ * Extract textual input content for trace storage.
+ */
+function extractInputContent(messages: ChatMessage[]): string {
+  return messages
+    .map((m) => {
+      if (typeof m.content === 'string') return m.content;
+
+      const parts = m.content as Array<{ type: string; text?: string }>;
+      const textParts = parts
+        .filter((p) => p.type === 'text' && typeof p.text === 'string' && p.text.length > 0)
+        .map((p) => p.text)
+        .join('\n');
+
+      return textParts || '[含附件内容]';
+    })
+    .join('\n');
+}
+
+function parseDataUrl(value: string): { mimeType: string; base64: string } | null {
+  const match = value.match(/^data:([^;]+);base64,(.+)$/);
+  if (!match) return null;
+  return { mimeType: match[1], base64: match[2] };
+}
+
+function extensionFromMimeType(mimeType: string): string {
+  if (mimeType.startsWith('image/')) return mimeType.split('/')[1] || 'png';
+  if (mimeType === 'application/pdf') return 'pdf';
+  if (mimeType === 'application/json') return 'json';
+  if (mimeType === 'text/markdown') return 'md';
+  if (mimeType === 'text/plain') return 'txt';
+  return 'bin';
+}
+
+function isTextMimeType(mimeType: string): boolean {
+  return (
+    mimeType.startsWith('text/') ||
+    ['application/json', 'application/xml', 'text/csv', 'text/yaml', 'application/x-yaml'].includes(mimeType)
+  );
+}
+
+function buildTextFileBlock(filename: string, content: string): string {
+  return `[File: ${filename}]\n\`\`\`\n${content}\n\`\`\``;
+}
+
+type RawContentPart = z.infer<typeof ContentPartSchema>;
+
+async function expandMessages(
+  userId: string,
+  messages: IncomingChatMessage[],
+  mode: 'vision' | 'ocr',
+  options?: { ocrProvider?: 'paddle' | 'datalab' }
+): Promise<ExpandedMessages> {
+  const attachments: TraceAttachment[] = [];
+  const seenFileIds = new Set<string>();
+  const ocrTextByFileId = new Map<string, string>();
+
+  const expanded: ChatMessage[] = [];
+
+  for (const message of messages) {
+    if (typeof message.content === 'string') {
+      expanded.push({ role: message.role, content: message.content });
+      continue;
+    }
+
+    const parts = message.content as RawContentPart[];
+    const newParts: Exclude<ChatMessage['content'], string> = [];
+
+    for (const part of parts) {
+      if (part.type === 'file_ref') {
+        const fileId = part.file_ref.fileId;
+        const { meta, buffer } = await filesService.downloadBuffer(userId, fileId);
+
+        if (!seenFileIds.has(fileId)) {
+          attachments.push({
+            fileId,
+            name: meta.originalName,
+            type: meta.mimeType,
+            size: meta.size,
+          });
+          seenFileIds.add(fileId);
+        }
+
+        if (mode === 'ocr' && (meta.mimeType.startsWith('image/') || meta.mimeType === 'application/pdf')) {
+          let text = ocrTextByFileId.get(fileId);
+          if (text === undefined) {
+            const result = await ocrService.extractForFile(
+              userId,
+              fileId,
+              options?.ocrProvider ? { provider: options.ocrProvider } : undefined
+            );
+            text = result.fullText || '';
+            ocrTextByFileId.set(fileId, text);
+          }
+
+          newParts.push({
+            type: 'text',
+            text: buildTextFileBlock(meta.originalName, text || '[OCR output is empty]'),
+          });
+        } else if (meta.mimeType.startsWith('image/')) {
+          newParts.push({
+            type: 'image_url',
+            image_url: { url: `data:${meta.mimeType};base64,${buffer.toString('base64')}` },
+          });
+        } else if (meta.mimeType === 'application/pdf') {
+          newParts.push({
+            type: 'file',
+            file: {
+              filename: meta.originalName,
+              file_data: `data:${meta.mimeType};base64,${buffer.toString('base64')}`,
+            },
+          });
+        } else if (isTextMimeType(meta.mimeType)) {
+          newParts.push({
+            type: 'text',
+            text: buildTextFileBlock(meta.originalName, buffer.toString('utf-8')),
+          });
+        } else {
+          newParts.push({
+            type: 'text',
+            text: `[File: ${meta.originalName}] (unsupported file type: ${meta.mimeType})`,
+          });
+        }
+
+        continue;
+      }
+
+      if (part.type === 'image_url') {
+        const dataUrl = parseDataUrl(part.image_url.url);
+        if (dataUrl) {
+          const buffer = Buffer.from(dataUrl.base64, 'base64');
+          const stored = await filesService.upload(userId, {
+            originalName: `image_${attachments.length + 1}.${extensionFromMimeType(dataUrl.mimeType)}`,
+            mimeType: dataUrl.mimeType,
+            size: buffer.length,
+            buffer,
+          });
+
+          if (!seenFileIds.has(stored.id)) {
+            attachments.push({
+              fileId: stored.id,
+              name: stored.originalName,
+              type: stored.mimeType,
+              size: stored.size,
+            });
+            seenFileIds.add(stored.id);
+          }
+        }
+
+        newParts.push(part);
+        continue;
+      }
+
+      if (part.type === 'file') {
+        const dataUrl = parseDataUrl(part.file.file_data);
+        if (dataUrl) {
+          const buffer = Buffer.from(dataUrl.base64, 'base64');
+          const stored = await filesService.upload(userId, {
+            originalName: part.file.filename,
+            mimeType: dataUrl.mimeType,
+            size: buffer.length,
+            buffer,
+          });
+
+          if (!seenFileIds.has(stored.id)) {
+            attachments.push({
+              fileId: stored.id,
+              name: stored.originalName,
+              type: stored.mimeType,
+              size: stored.size,
+            });
+            seenFileIds.add(stored.id);
+          }
+        }
+
+        newParts.push(part);
+        continue;
+      }
+
+      newParts.push(part);
+    }
+
+    expanded.push({ role: message.role, content: newParts });
+  }
+
+  return { messages: expanded, inputContent: extractInputContent(expanded), attachments };
+}
+
+function hasFileParts(messages: IncomingChatMessage[]): boolean {
+  for (const message of messages) {
+    if (typeof message.content === 'string') continue;
+    for (const part of message.content as RawContentPart[]) {
+      if (part.type === 'file_ref' || part.type === 'file' || part.type === 'image_url') return true;
+    }
+  }
+  return false;
+}
+
+function stripFileParts(messages: IncomingChatMessage[]): IncomingChatMessage[] {
+  return messages.map((message) => {
+    if (typeof message.content === 'string') return message;
+
+    const parts = message.content as RawContentPart[];
+    const textParts = parts.filter((p) => p.type === 'text');
+
+    if (textParts.length === 0) {
+      return { role: message.role, content: '' };
+    }
+
+    return { role: message.role, content: textParts };
+  });
+}
+
+function estimateTokensFromText(text: string): number {
+  if (!text) return 0;
+  // Conservative heuristic: count CJK chars as 1 token; other chars as 1 token per ~4 chars.
+  const cjkMatches = text.match(/[\u4E00-\u9FFF]/g);
+  const cjk = cjkMatches ? cjkMatches.length : 0;
+  const other = Math.max(0, text.length - cjk);
+  return Math.ceil(cjk + other / 4);
+}
+
+function estimateTokensFromMessages(messages: ChatMessage[]): number {
+  let tokens = 0;
+  for (const msg of messages) {
+    let text = '';
+    if (typeof msg.content === 'string') {
+      text = msg.content;
+    } else {
+      for (const part of msg.content as Array<{ type: string; text?: string }>) {
+        if (part.type === 'text' && typeof part.text === 'string') text += part.text + '\n';
+      }
+    }
+
+    // Per-message overhead (role tags, separators, etc.)
+    tokens += 4 + estimateTokensFromText(text);
+  }
+  return tokens;
+}
 
 export const chatController = {
   /**
@@ -53,6 +326,48 @@ export const chatController = {
 
     // Get model with decrypted API key
     const { model, provider, apiKey } = await getModelWithProvider(userId, data.modelId);
+
+    const requestedFileProcessing = data.fileProcessing ?? 'auto';
+
+    const messagesForModel =
+      requestedFileProcessing === 'none'
+        ? stripFileParts(data.messages)
+        : data.messages;
+
+    const wantsFiles = hasFileParts(messagesForModel);
+
+    let mode: 'vision' | 'ocr' = 'vision';
+    if (wantsFiles) {
+      if (requestedFileProcessing === 'ocr') mode = 'ocr';
+      else if (requestedFileProcessing === 'vision') mode = 'vision';
+      else mode = model.supportsVision ? 'vision' : 'ocr';
+    }
+
+    if (wantsFiles && mode === 'ocr') {
+      const ocrSettings = await ocrService.getSettings(userId);
+      if (!ocrSettings.enabled) {
+        throw new AppError(400, 'FILE_UPLOAD_NOT_ALLOWED', 'File upload requires OCR to be enabled');
+      }
+    }
+
+    if (wantsFiles && mode === 'vision' && !model.supportsVision) {
+      throw new AppError(
+        400,
+        'FILE_UPLOAD_NOT_ALLOWED',
+        'This model does not support direct file inputs. Enable OCR to use attachments.'
+      );
+    }
+
+    const expanded = await expandMessages(userId, messagesForModel, mode, { ocrProvider: data.ocrProvider });
+
+    // Context budget check (no chunking). Estimate tokens conservatively.
+    const estimatedTokens = estimateTokensFromMessages(expanded.messages);
+    if (estimatedTokens > model.maxContextLength) {
+      throw new AppError(400, 'CONTEXT_LIMIT_EXCEEDED', 'Context length exceeded', {
+        estimatedTokens,
+        maxContextLength: model.maxContextLength,
+      });
+    }
 
     const startTime = Date.now();
     const abortController = new AbortController();
@@ -69,6 +384,8 @@ export const chatController = {
       max_tokens: data.max_tokens,
       frequency_penalty: data.frequency_penalty,
       presence_penalty: data.presence_penalty,
+      reasoning: data.reasoning,
+      responseFormat: data.responseFormat,
     };
 
     if (data.stream) {
@@ -86,7 +403,7 @@ export const chatController = {
           provider,
           model,
           apiKey,
-          data.messages as ChatMessage[],
+          expanded.messages,
           options,
           abortController.signal
         );
@@ -119,7 +436,13 @@ export const chatController = {
             'PROVIDER_ERROR',
             (error as Error).message
           );
-          res.write(`data: ${JSON.stringify({ error: appError })}\n\n`);
+          // Keep SSE error shape consistent with REST error responses: { error: { code, message, details } }
+          const payload = appError.toJSON() as { error?: Record<string, unknown> };
+          if (req.requestId) {
+            payload.error = payload.error ?? {};
+            payload.error.requestId = req.requestId;
+          }
+          res.write(`data: ${JSON.stringify(payload)}\n\n`);
         }
       } finally {
         const latencyMs = Date.now() - startTime;
@@ -127,12 +450,8 @@ export const chatController = {
         // Save trace if requested and not aborted
         if (data.saveTrace && !abortController.signal.aborted) {
           try {
-            const inputContent = data.messages
-              .map((m) => (typeof m.content === 'string' ? m.content : '[complex content]'))
-              .join('\n');
-
             await tracesRepository.create(userId, {
-              input: inputContent,
+              input: expanded.inputContent,
               output: fullContent || null,
               tokensInput: usage.prompt_tokens,
               tokensOutput: usage.completion_tokens,
@@ -140,6 +459,17 @@ export const chatController = {
               status: fullContent ? 'success' : 'error',
               prompt: data.promptId ? { connect: { id: data.promptId } } : undefined,
               model: { connect: { id: model.id } },
+              attachments: expanded.attachments.length > 0 ? expanded.attachments : undefined,
+              metadata: expanded.attachments.length > 0
+                ? {
+                    files: expanded.attachments.map((a) => ({
+                      fileId: a.fileId,
+                      name: a.name,
+                      type: a.type,
+                      size: a.size,
+                    })),
+                  }
+                : {},
             });
           } catch (traceError) {
             console.error('Failed to save trace:', traceError);
@@ -155,7 +485,7 @@ export const chatController = {
           provider,
           model,
           apiKey,
-          data.messages as ChatMessage[],
+          expanded.messages,
           options
         );
 
@@ -164,12 +494,8 @@ export const chatController = {
         // Save trace if requested
         if (data.saveTrace) {
           try {
-            const inputContent = data.messages
-              .map((m) => (typeof m.content === 'string' ? m.content : '[complex content]'))
-              .join('\n');
-
             await tracesRepository.create(userId, {
-              input: inputContent,
+              input: expanded.inputContent,
               output: result.content,
               tokensInput: result.usage.prompt_tokens,
               tokensOutput: result.usage.completion_tokens,
@@ -177,6 +503,17 @@ export const chatController = {
               status: 'success',
               prompt: data.promptId ? { connect: { id: data.promptId } } : undefined,
               model: { connect: { id: model.id } },
+              attachments: expanded.attachments.length > 0 ? expanded.attachments : undefined,
+              metadata: expanded.attachments.length > 0
+                ? {
+                    files: expanded.attachments.map((a) => ({
+                      fileId: a.fileId,
+                      name: a.name,
+                      type: a.type,
+                      size: a.size,
+                    })),
+                  }
+                : {},
             });
           } catch (traceError) {
             console.error('Failed to save trace:', traceError);
@@ -196,18 +533,25 @@ export const chatController = {
         // Save error trace if requested
         if (data.saveTrace) {
           try {
-            const inputContent = data.messages
-              .map((m) => (typeof m.content === 'string' ? m.content : '[complex content]'))
-              .join('\n');
-
             await tracesRepository.create(userId, {
-              input: inputContent,
+              input: expanded.inputContent,
               output: null,
               latencyMs,
               status: 'error',
               errorMessage: (error as Error).message,
               prompt: data.promptId ? { connect: { id: data.promptId } } : undefined,
               model: { connect: { id: model.id } },
+              attachments: expanded.attachments.length > 0 ? expanded.attachments : undefined,
+              metadata: expanded.attachments.length > 0
+                ? {
+                    files: expanded.attachments.map((a) => ({
+                      fileId: a.fileId,
+                      name: a.name,
+                      type: a.type,
+                      size: a.size,
+                    })),
+                  }
+                : {},
             });
           } catch (traceError) {
             console.error('Failed to save trace:', traceError);

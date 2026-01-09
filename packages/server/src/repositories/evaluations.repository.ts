@@ -1,14 +1,14 @@
 import { TenantRepository, type FindOptions } from './base.repository.js';
 import { prisma } from '../config/database.js';
-import type { Prisma, Evaluation, TestCase, EvaluationCriterion, EvaluationRun, TestCaseResult } from '@prisma/client';
+import type { Prisma, Evaluation, TestCase, EvaluationCriterion, EvaluationRun, TestCaseResult, ProviderType } from '@prisma/client';
 
 /**
  * Evaluation with all relations
  */
 export type EvaluationWithRelations = Evaluation & {
   prompt?: { id: string; name: string; currentVersion: number } | null;
-  model?: { id: string; name: string; modelId: string } | null;
-  judgeModel?: { id: string; name: string; modelId: string } | null;
+  model?: { id: string; name: string; modelId: string; provider: { type: ProviderType } } | null;
+  judgeModel?: { id: string; name: string; modelId: string; provider: { type: ProviderType } } | null;
   testCases?: TestCase[];
   criteria?: EvaluationCriterion[];
   runs?: EvaluationRun[];
@@ -17,19 +17,27 @@ export type EvaluationWithRelations = Evaluation & {
 /**
  * Evaluations Repository
  */
-export class EvaluationsRepository extends TenantRepository<
+class EvaluationsRepositoryClass extends TenantRepository<
   Evaluation,
   Prisma.EvaluationCreateInput,
   Prisma.EvaluationUpdateInput
 > {
-  protected tableName = 'evaluation' as const;
+  protected delegate = prisma.evaluation;
+  protected entityName = 'Evaluation';
 
   /**
    * Find all evaluations for a user (list view - minimal data)
+   * Includes user's own evaluations and public evaluations
    */
   async findAll(userId: string, options?: FindOptions): Promise<EvaluationWithRelations[]> {
     return prisma.evaluation.findMany({
-      where: { userId, ...options?.where },
+      where: {
+        OR: [
+          { userId },
+          { isPublic: true },
+        ],
+        ...options?.where,
+      },
       select: {
         id: true,
         userId: true,
@@ -40,16 +48,27 @@ export class EvaluationsRepository extends TenantRepository<
         status: true,
         config: true,
         results: true,
+        isPublic: true,
         createdAt: true,
         completedAt: true,
         prompt: {
           select: { id: true, name: true, currentVersion: true },
         },
         model: {
-          select: { id: true, name: true, modelId: true },
+          select: {
+            id: true,
+            name: true,
+            modelId: true,
+            provider: { select: { type: true } },
+          },
         },
         judgeModel: {
-          select: { id: true, name: true, modelId: true },
+          select: {
+            id: true,
+            name: true,
+            modelId: true,
+            provider: { select: { type: true } },
+          },
         },
         _count: {
           select: { testCases: true, criteria: true, runs: true },
@@ -63,6 +82,7 @@ export class EvaluationsRepository extends TenantRepository<
 
   /**
    * Find evaluation by ID with all relations
+   * Allows access to own evaluations or public evaluations
    */
   async findByIdWithRelations(userId: string, id: string): Promise<EvaluationWithRelations | null> {
     const evaluation = await prisma.evaluation.findUnique({
@@ -72,10 +92,20 @@ export class EvaluationsRepository extends TenantRepository<
           select: { id: true, name: true, currentVersion: true },
         },
         model: {
-          select: { id: true, name: true, modelId: true },
+          select: {
+            id: true,
+            name: true,
+            modelId: true,
+            provider: { select: { type: true } },
+          },
         },
         judgeModel: {
-          select: { id: true, name: true, modelId: true },
+          select: {
+            id: true,
+            name: true,
+            modelId: true,
+            provider: { select: { type: true } },
+          },
         },
         testCases: {
           orderBy: { orderIndex: 'asc' },
@@ -91,7 +121,7 @@ export class EvaluationsRepository extends TenantRepository<
     });
 
     if (!evaluation) return null;
-    if (evaluation.userId !== userId) return null;
+    if (evaluation.userId !== userId && !evaluation.isPublic) return null;
 
     return evaluation;
   }
@@ -108,7 +138,7 @@ export class EvaluationsRepository extends TenantRepository<
     return prisma.evaluation.create({
       data: {
         ...data,
-        userId,
+        user: { connect: { id: userId } },
         testCases: testCases
           ? {
               create: testCases.map((tc, index) => ({
@@ -128,10 +158,20 @@ export class EvaluationsRepository extends TenantRepository<
           select: { id: true, name: true, currentVersion: true },
         },
         model: {
-          select: { id: true, name: true, modelId: true },
+          select: {
+            id: true,
+            name: true,
+            modelId: true,
+            provider: { select: { type: true } },
+          },
         },
         judgeModel: {
-          select: { id: true, name: true, modelId: true },
+          select: {
+            id: true,
+            name: true,
+            modelId: true,
+            provider: { select: { type: true } },
+          },
         },
         testCases: {
           orderBy: { orderIndex: 'asc' },
@@ -189,10 +229,20 @@ export class EvaluationsRepository extends TenantRepository<
           select: { id: true, name: true, currentVersion: true },
         },
         model: {
-          select: { id: true, name: true, modelId: true },
+          select: {
+            id: true,
+            name: true,
+            modelId: true,
+            provider: { select: { type: true } },
+          },
         },
         judgeModel: {
-          select: { id: true, name: true, modelId: true },
+          select: {
+            id: true,
+            name: true,
+            modelId: true,
+            provider: { select: { type: true } },
+          },
         },
         testCases: {
           orderBy: { orderIndex: 'asc' },
@@ -426,7 +476,7 @@ export class TestCaseResultsRepository {
 }
 
 // Export singleton instances
-export const evaluationsRepository = new EvaluationsRepository();
+export const evaluationsRepository = new EvaluationsRepositoryClass();
 export const testCasesRepository = new TestCasesRepository();
 export const criteriaRepository = new CriteriaRepository();
 export const runsRepository = new RunsRepository();

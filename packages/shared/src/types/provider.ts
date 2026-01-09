@@ -36,6 +36,7 @@ export interface Model {
   modelId: string;
   name: string;
   capabilities: string[];
+  maxContextLength: number;
   supportsVision: boolean;
   supportsReasoning: boolean;
   supportsFunctionCalling: boolean;
@@ -46,6 +47,7 @@ export interface CreateModelDto {
   modelId: string;
   name: string;
   capabilities?: string[];
+  maxContextLength?: number;
   supportsVision?: boolean;
   supportsReasoning?: boolean;
   supportsFunctionCalling?: boolean;
@@ -54,6 +56,7 @@ export interface CreateModelDto {
 export interface UpdateModelDto {
   name?: string;
   capabilities?: string[];
+  maxContextLength?: number;
   supportsVision?: boolean;
   supportsReasoning?: boolean;
   supportsFunctionCalling?: boolean;

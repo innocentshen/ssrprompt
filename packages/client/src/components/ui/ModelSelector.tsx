@@ -97,14 +97,14 @@ export function ModelSelector({
   const filteredModels = models.filter((m) => {
     const matchesSearch = !searchQuery ||
       m.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      m.model_id.toLowerCase().includes(searchQuery.toLowerCase());
-    const hasEnabledProvider = enabledProviderIds.includes(m.provider_id);
+      m.modelId.toLowerCase().includes(searchQuery.toLowerCase());
+    const hasEnabledProvider = enabledProviderIds.includes(m.providerId);
     return matchesSearch && hasEnabledProvider;
   });
 
   // 按供应商分组
   const groupedModels = enabledProviders.reduce((acc, provider) => {
-    const providerModels = filteredModels.filter((m) => m.provider_id === provider.id);
+    const providerModels = filteredModels.filter((m) => m.providerId === provider.id);
     if (providerModels.length > 0) {
       acc.push({
         provider,
@@ -117,7 +117,7 @@ export function ModelSelector({
   // 获取当前选中的模型
   const selectedModel = models.find((m) => m.id === selectedModelId);
   const selectedProvider = selectedModel
-    ? providers.find((p) => p.id === selectedModel.provider_id)
+    ? providers.find((p) => p.id === selectedModel.providerId)
     : null;
 
   const handleSelect = (modelId: string) => {

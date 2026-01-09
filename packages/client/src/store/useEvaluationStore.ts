@@ -2,13 +2,13 @@ import { create } from 'zustand';
 import { devtools } from 'zustand/middleware';
 import type {
   Evaluation,
-  Prompt,
+  PromptListItem,
   TestCase,
   EvaluationCriterion,
   TestCaseResult,
   EvaluationRun,
-} from '../types/database';
-import { getDatabase, isDatabaseConfigured } from '../lib/database';
+} from '../types';
+import { evaluationsApi, testCasesApi, criteriaApi, runsApi, promptsApi } from '../api';
 
 type TabType = 'testcases' | 'criteria' | 'history' | 'results';
 
@@ -24,7 +24,7 @@ interface EvaluationCache {
 interface EvaluationState {
   // List data
   evaluations: Evaluation[];
-  prompts: Prompt[];
+  prompts: PromptListItem[];
   listLoaded: boolean;  // 评测列表是否已加载
 
   // Selection
@@ -150,11 +150,6 @@ export const useEvaluationStore = create<EvaluationState>()(
 
       // Actions
       fetchEvaluations: async (forceRefresh = false) => {
-        if (!isDatabaseConfigured()) {
-          set({ listLoading: false });
-          return;
-        }
-
         // 如果已加载且不强制刷新，直接返回
         const state = get();
         if (state.listLoaded && !forceRefresh) {
@@ -163,13 +158,9 @@ export const useEvaluationStore = create<EvaluationState>()(
 
         set({ listLoading: true });
         try {
-          const db = getDatabase();
-          const { data } = await db
-            .from('evaluations')
-            .select('*')
-            .order('created_at', { ascending: false });
-
-          set({ evaluations: data || [], listLoaded: true });
+          const data = await evaluationsApi.list();
+          // Use API response directly (camelCase)
+          set({ evaluations: data, listLoaded: true });
         } catch (error) {
           console.error('Failed to fetch evaluations:', error);
         } finally {
@@ -178,12 +169,10 @@ export const useEvaluationStore = create<EvaluationState>()(
       },
 
       fetchPrompts: async () => {
-        if (!isDatabaseConfigured()) return;
-
         try {
-          const db = getDatabase();
-          const { data } = await db.from('prompts').select('*');
-          set({ prompts: data || [] });
+          const data = await promptsApi.list();
+          // Use API response directly
+          set({ prompts: data });
         } catch (error) {
           console.error('Failed to fetch prompts:', error);
         }
@@ -195,7 +184,6 @@ export const useEvaluationStore = create<EvaluationState>()(
         // 检查缓存
         const cached = state.cache.get(evaluationId);
         if (cached && !forceRefresh) {
-          // 直接使用缓存，不显示加载状态
           set({
             testCases: cached.testCases,
             criteria: cached.criteria,
@@ -208,20 +196,12 @@ export const useEvaluationStore = create<EvaluationState>()(
 
         set({ detailsLoading: true });
         try {
-          const db = getDatabase();
-          const [testCasesRes, criteriaRes, runsRes] = await Promise.all([
-            db.from('test_cases').select('*').eq('evaluation_id', evaluationId).order('order_index'),
-            db.from('evaluation_criteria').select('*').eq('evaluation_id', evaluationId).order('created_at'),
-            db.from('evaluation_runs').select('*').eq('evaluation_id', evaluationId).order('created_at', { ascending: false }),
-          ]);
+          const data = await evaluationsApi.getById(evaluationId);
 
-          const testCases = (testCasesRes.data || []).map(tc => ({
-            ...tc,
-            attachments: tc.attachments || [],
-            notes: tc.notes || null,
-          }));
-          const criteria = criteriaRes.data || [];
-          const runs = runsRes.data || [];
+          // Use API response directly (camelCase)
+          const testCases = data.testCases || [];
+          const criteria = data.criteria || [];
+          const runs = data.runs || [];
 
           // Find latest completed run and load its results
           const latestCompletedRun = runs.find(r => r.status === 'completed');
@@ -230,39 +210,21 @@ export const useEvaluationStore = create<EvaluationState>()(
 
           if (latestCompletedRun) {
             selectedRunId = latestCompletedRun.id;
-            const resultsRes = await db
-              .from('test_case_results')
-              .select('*')
-              .eq('run_id', latestCompletedRun.id)
-              .order('created_at');
-            results = resultsRes.data || [];
+            results = await runsApi.getResults(latestCompletedRun.id);
           }
 
           // 只有当前选中的还是这个评测时才更新状态
           if (get().selectedEvaluationId === evaluationId) {
-            set({
-              testCases,
-              criteria,
-              runs,
-              results,
-              selectedRunId,
-            });
+            set({ testCases, criteria, runs, results, selectedRunId });
           }
 
           // 存入缓存
           const newCache = new Map(get().cache);
-          newCache.set(evaluationId, {
-            testCases,
-            criteria,
-            runs,
-            results,
-            selectedRunId,
-          });
+          newCache.set(evaluationId, { testCases, criteria, runs, results, selectedRunId });
           set({ cache: newCache });
         } catch (error) {
           console.error('Failed to fetch evaluation details:', error);
         } finally {
-          // 只有当前选中的还是这个评测时才取消加载状态
           if (get().selectedEvaluationId === evaluationId) {
             set({ detailsLoading: false });
           }
@@ -271,22 +233,13 @@ export const useEvaluationStore = create<EvaluationState>()(
 
       fetchRunResults: async (runId: string) => {
         try {
-          const db = getDatabase();
-          const { data } = await db
-            .from('test_case_results')
-            .select('*')
-            .eq('run_id', runId)
-            .order('created_at');
+          const results = await runsApi.getResults(runId);
 
           const state = get();
-          set({ results: data || [] });
+          set({ results });
 
-          // 更新缓存
           if (state.selectedEvaluationId) {
-            get().updateCache(state.selectedEvaluationId, {
-              results: data || [],
-              selectedRunId: runId,
-            });
+            get().updateCache(state.selectedEvaluationId, { results, selectedRunId: runId });
           }
         } catch (error) {
           console.error('Failed to fetch run results:', error);
@@ -345,36 +298,22 @@ export const useEvaluationStore = create<EvaluationState>()(
         if (!state.newEvalName.trim()) return null;
 
         try {
-          const db = getDatabase();
-          const { data, error } = await db
-            .from('evaluations')
-            .insert({
-              user_id: 'default',
-              name: state.newEvalName.trim(),
-              prompt_id: state.newEvalPromptId || null,
-              model_id: state.newEvalModelId || null,
-              judge_model_id: state.newEvalJudgeModelId || null,
-              status: 'pending',
-              config: {},
-              results: {},
-            })
-            .select()
-            .single();
-
-          if (error || !data) {
-            console.error('Failed to create evaluation:', error);
-            return null;
-          }
+          const newEval = await evaluationsApi.create({
+            name: state.newEvalName.trim(),
+            promptId: state.newEvalPromptId || undefined,
+            modelId: state.newEvalModelId || undefined,
+            judgeModelId: state.newEvalJudgeModelId || undefined,
+          });
 
           set(s => ({
-            evaluations: [data, ...s.evaluations],
+            evaluations: [newEval, ...s.evaluations],
             showNewEval: false,
           }));
 
           get().resetNewEvalForm();
-          get().selectEvaluation(data.id);
+          get().selectEvaluation(newEval.id);
 
-          return data;
+          return newEval;
         } catch (error) {
           console.error('Failed to create evaluation:', error);
           return null;
@@ -383,20 +322,12 @@ export const useEvaluationStore = create<EvaluationState>()(
 
       deleteEvaluation: async (id: string) => {
         try {
-          const db = getDatabase();
-          const { error } = await db.from('evaluations').delete().eq('id', id);
-
-          if (error) {
-            console.error('Failed to delete evaluation:', error);
-            return false;
-          }
+          await evaluationsApi.delete(id);
 
           const state = get();
           const newEvaluations = state.evaluations.filter(e => e.id !== id);
 
-          // 清除缓存
           get().clearCache(id);
-
           set({ evaluations: newEvaluations });
 
           if (state.selectedEvaluationId === id) {
@@ -415,65 +346,7 @@ export const useEvaluationStore = create<EvaluationState>()(
         if (!evaluation) return null;
 
         try {
-          const db = getDatabase();
-
-          // Create new evaluation
-          const { data: newEval, error: evalError } = await db
-            .from('evaluations')
-            .insert({
-              user_id: 'default',
-              name: `${evaluation.name} (副本)`,
-              prompt_id: evaluation.prompt_id,
-              model_id: evaluation.model_id,
-              judge_model_id: evaluation.judge_model_id,
-              status: 'pending',
-              config: evaluation.config,
-              results: {},
-            })
-            .select()
-            .single();
-
-          if (evalError || !newEval) return null;
-
-          // Copy test cases
-          const { data: testCases } = await db
-            .from('test_cases')
-            .select('*')
-            .eq('evaluation_id', id);
-
-          if (testCases && testCases.length > 0) {
-            await db.from('test_cases').insert(
-              testCases.map(tc => ({
-                evaluation_id: newEval.id,
-                name: tc.name,
-                input_text: tc.input_text,
-                input_variables: tc.input_variables,
-                attachments: tc.attachments,
-                expected_output: tc.expected_output,
-                notes: tc.notes,
-                order_index: tc.order_index,
-              }))
-            );
-          }
-
-          // Copy criteria
-          const { data: criteria } = await db
-            .from('evaluation_criteria')
-            .select('*')
-            .eq('evaluation_id', id);
-
-          if (criteria && criteria.length > 0) {
-            await db.from('evaluation_criteria').insert(
-              criteria.map(c => ({
-                evaluation_id: newEval.id,
-                name: c.name,
-                description: c.description,
-                prompt: c.prompt,
-                weight: c.weight,
-                enabled: c.enabled,
-              }))
-            );
-          }
+          const newEval = await evaluationsApi.copy(id, `${evaluation.name} (副本)`);
 
           set(s => ({ evaluations: [newEval, ...s.evaluations] }));
           get().selectEvaluation(newEval.id);
@@ -490,13 +363,8 @@ export const useEvaluationStore = create<EvaluationState>()(
         if (!state.selectedEvaluationId) return false;
 
         try {
-          const db = getDatabase();
-          const { error } = await db
-            .from('evaluations')
-            .update({ [field]: value })
-            .eq('id', state.selectedEvaluationId);
-
-          if (error) return false;
+          // Use camelCase field names directly
+          await evaluationsApi.update(state.selectedEvaluationId, { [field]: value });
 
           set(s => ({
             evaluations: s.evaluations.map(e =>
@@ -516,28 +384,18 @@ export const useEvaluationStore = create<EvaluationState>()(
         if (!state.selectedEvaluationId) return null;
 
         try {
-          const db = getDatabase();
-          const { data, error } = await db
-            .from('test_cases')
-            .insert({
-              evaluation_id: state.selectedEvaluationId,
-              name: '',
-              input_text: '',
-              input_variables: {},
-              attachments: [],
-              expected_output: null,
-              notes: null,
-              order_index: state.testCases.length,
-            })
-            .select()
-            .single();
+          const newTestCase = await testCasesApi.create(state.selectedEvaluationId, {
+            name: '',
+            inputText: '',
+            inputVariables: {},
+            attachments: [],
+            orderIndex: state.testCases.length,
+          });
 
-          if (error || !data) return null;
-
-          const newTestCases = [...state.testCases, data];
+          const newTestCases = [...state.testCases, newTestCase];
           set({ testCases: newTestCases });
           get().updateCache(state.selectedEvaluationId, { testCases: newTestCases });
-          return data;
+          return newTestCase;
         } catch {
           return null;
         }
@@ -548,21 +406,15 @@ export const useEvaluationStore = create<EvaluationState>()(
         if (!state.selectedEvaluationId) return false;
 
         try {
-          const db = getDatabase();
-          const { error } = await db
-            .from('test_cases')
-            .update({
-              name: testCase.name,
-              input_text: testCase.input_text,
-              input_variables: testCase.input_variables,
-              attachments: testCase.attachments,
-              expected_output: testCase.expected_output,
-              notes: testCase.notes,
-              order_index: testCase.order_index,
-            })
-            .eq('id', testCase.id);
-
-          if (error) return false;
+          await testCasesApi.update(testCase.id, {
+            name: testCase.name,
+            inputText: testCase.inputText,
+            inputVariables: testCase.inputVariables,
+            attachments: testCase.attachments,
+            expectedOutput: testCase.expectedOutput,
+            notes: testCase.notes,
+            orderIndex: testCase.orderIndex,
+          });
 
           const newTestCases = state.testCases.map(tc =>
             tc.id === testCase.id ? testCase : tc
@@ -580,10 +432,7 @@ export const useEvaluationStore = create<EvaluationState>()(
         if (!state.selectedEvaluationId) return false;
 
         try {
-          const db = getDatabase();
-          const { error } = await db.from('test_cases').delete().eq('id', id);
-
-          if (error) return false;
+          await testCasesApi.delete(id);
 
           const newTestCases = state.testCases.filter(tc => tc.id !== id);
           set({ testCases: newTestCases });
@@ -600,22 +449,18 @@ export const useEvaluationStore = create<EvaluationState>()(
         if (!state.selectedEvaluationId) return null;
 
         try {
-          const db = getDatabase();
-          const { data, error } = await db
-            .from('evaluation_criteria')
-            .insert({
-              evaluation_id: state.selectedEvaluationId,
-              ...criterion,
-            })
-            .select()
-            .single();
+          const newCriterion = await criteriaApi.create(state.selectedEvaluationId, {
+            name: criterion.name,
+            description: criterion.description ?? undefined,
+            prompt: criterion.prompt ?? '',
+            weight: criterion.weight,
+            enabled: criterion.enabled,
+          });
 
-          if (error || !data) return null;
-
-          const newCriteria = [...state.criteria, data];
+          const newCriteria = [...state.criteria, newCriterion];
           set({ criteria: newCriteria });
           get().updateCache(state.selectedEvaluationId, { criteria: newCriteria });
-          return data;
+          return newCriterion;
         } catch {
           return null;
         }
@@ -626,19 +471,13 @@ export const useEvaluationStore = create<EvaluationState>()(
         if (!state.selectedEvaluationId) return false;
 
         try {
-          const db = getDatabase();
-          const { error } = await db
-            .from('evaluation_criteria')
-            .update({
-              name: criterion.name,
-              description: criterion.description,
-              prompt: criterion.prompt,
-              weight: criterion.weight,
-              enabled: criterion.enabled,
-            })
-            .eq('id', criterion.id);
-
-          if (error) return false;
+          await criteriaApi.update(criterion.id, {
+            name: criterion.name,
+            description: criterion.description,
+            prompt: criterion.prompt,
+            weight: criterion.weight,
+            enabled: criterion.enabled,
+          });
 
           const newCriteria = state.criteria.map(c =>
             c.id === criterion.id ? criterion : c
@@ -656,10 +495,7 @@ export const useEvaluationStore = create<EvaluationState>()(
         if (!state.selectedEvaluationId) return false;
 
         try {
-          const db = getDatabase();
-          const { error } = await db.from('evaluation_criteria').delete().eq('id', id);
-
-          if (error) return false;
+          await criteriaApi.delete(id);
 
           const newCriteria = state.criteria.filter(c => c.id !== id);
           set({ criteria: newCriteria });
@@ -676,20 +512,12 @@ export const useEvaluationStore = create<EvaluationState>()(
         if (!state.selectedEvaluationId) return false;
 
         try {
-          const db = getDatabase();
-
-          // Delete results first
-          await db.from('test_case_results').delete().eq('run_id', runId);
-          // Delete run
-          const { error } = await db.from('evaluation_runs').delete().eq('id', runId);
-
-          if (error) return false;
+          await runsApi.delete(runId);
 
           const newRuns = state.runs.filter(r => r.id !== runId);
           const newResults = state.selectedRunId === runId ? [] : state.results;
           let newSelectedRunId = state.selectedRunId;
 
-          // If deleted run was selected, select another
           if (state.selectedRunId === runId) {
             const nextRun = newRuns.find(r => r.status === 'completed');
             newSelectedRunId = nextRun?.id || null;
@@ -701,7 +529,6 @@ export const useEvaluationStore = create<EvaluationState>()(
             set({ runs: newRuns });
           }
 
-          // 更新缓存
           get().updateCache(state.selectedEvaluationId, {
             runs: newRuns,
             results: newResults,

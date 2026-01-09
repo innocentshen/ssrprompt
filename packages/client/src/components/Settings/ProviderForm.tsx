@@ -30,8 +30,9 @@ interface ProviderFormProps {
   models: Model[];
   onSave: (data: Partial<Provider>) => Promise<void>;
   onDelete: () => Promise<void>;
-  onAddModel: (modelId: string, name: string) => Promise<void>;
+  onAddModel: (modelId: string, name: string, options?: { supportsVision?: boolean; maxContextLength?: number }) => Promise<void>;
   onRemoveModel: (modelId: string) => Promise<void>;
+  onToggleVision?: (modelId: string, enabled: boolean) => Promise<void>;
   onTestConnection: (apiKey: string, baseUrl: string, type: ProviderType) => Promise<boolean>;
 }
 
@@ -71,6 +72,8 @@ export function ProviderForm({
   const [saving, setSaving] = useState(false);
   const [newModelId, setNewModelId] = useState('');
   const [newModelName, setNewModelName] = useState('');
+  const [newModelMaxContextLength, setNewModelMaxContextLength] = useState('8000');
+  const [newModelSupportsVision, setNewModelSupportsVision] = useState(false);
   const [fetchingModels, setFetchingModels] = useState(false);
   const [showModelPicker, setShowModelPicker] = useState(false);
   const [fetchedModels, setFetchedModels] = useState<FetchedModel[]>([]);
@@ -89,8 +92,10 @@ export function ProviderForm({
     if (provider) {
       setName(provider.name);
       setType(provider.type);
-      setApiKey(provider.api_key);
-      setBaseUrl(provider.base_url || '');
+      // Never re-hydrate the stored API key back into the input.
+      // Backend returns a masked value (e.g. "sk-xxxx...") for security; sending it back would overwrite the real key.
+      setApiKey('');
+      setBaseUrl(provider.baseUrl || '');
       setEnabled(provider.enabled);
     } else {
       setName('');
@@ -99,6 +104,7 @@ export function ProviderForm({
       setBaseUrl('');
       setEnabled(false);
     }
+    setShowApiKey(false);
     setTestResult(null);
   }, [provider]);
 
@@ -126,7 +132,14 @@ export function ProviderForm({
   const handleSave = async () => {
     setSaving(true);
     try {
-      await onSave({ name, type, api_key: apiKey, base_url: baseUrl || null, enabled });
+      const trimmedApiKey = apiKey.trim();
+      await onSave({
+        name,
+        type,
+        ...(trimmedApiKey ? { apiKey: trimmedApiKey } : {}),
+        baseUrl: baseUrl || null,
+        enabled,
+      });
     } finally {
       setSaving(false);
     }
@@ -134,9 +147,15 @@ export function ProviderForm({
 
   const handleAddModel = async () => {
     if (!newModelId.trim()) return;
-    await onAddModel(newModelId.trim(), newModelName.trim() || newModelId.trim());
+    const parsedMaxContext = Number.parseInt(newModelMaxContextLength, 10);
+    await onAddModel(newModelId.trim(), newModelName.trim() || newModelId.trim(), {
+      supportsVision: newModelSupportsVision,
+      maxContextLength: Number.isFinite(parsedMaxContext) ? parsedMaxContext : undefined,
+    });
     setNewModelId('');
     setNewModelName('');
+    setNewModelMaxContextLength('8000');
+    setNewModelSupportsVision(false);
   };
 
   const handleFetchModels = async () => {
@@ -184,24 +203,34 @@ export function ProviderForm({
         throw new Error(errorData.error?.message || `HTTP ${response.status}`);
       }
 
-      const data = await response.json();
+      const data = (await response.json()) as { models?: unknown[]; data?: unknown[] };
       let modelList: FetchedModel[] = [];
 
       if (type === 'gemini') {
-        modelList = (data.models || []).map((m: any) => ({
-          id: m.name?.replace('models/', '') || m.name,
-          name: m.displayName || m.name?.replace('models/', ''),
-          owned_by: 'google',
-        }));
+        modelList = (data.models || [])
+          .map((m: unknown) => {
+            const model = m as { name?: string; displayName?: string };
+            return {
+              id: model.name?.replace('models/', '') || model.name || '',
+              name: model.displayName || model.name?.replace('models/', '') || '',
+              owned_by: 'google',
+            };
+          })
+          .filter((m) => m.id && m.name);
       } else {
-        modelList = (data.data || []).map((m: any) => ({
-          id: m.id,
-          name: m.id,
-          owned_by: m.owned_by,
-        }));
+        modelList = (data.data || [])
+          .map((m: unknown) => {
+            const model = m as { id?: string; owned_by?: string };
+            return {
+              id: model.id || '',
+              name: model.id || '',
+              owned_by: model.owned_by,
+            };
+          })
+          .filter((m) => m.id);
       }
 
-      const existingModelIds = new Set(models.map(m => m.model_id));
+      const existingModelIds = new Set(models.map(m => m.modelId));
       modelList = modelList.filter(m => !existingModelIds.has(m.id));
 
       if (modelList.length === 0) {
@@ -215,8 +244,9 @@ export function ProviderForm({
       setSelectedFetchedModels(new Set());
       setShowModelPicker(true);
       showToast('success', t('foundModelsCount', { count: modelList.length }));
-    } catch (err: any) {
-      showToast('error', t('fetchModelsFailed') + ': ' + (err.message || 'Network error'));
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Network error';
+      showToast('error', t('fetchModelsFailed') + ': ' + message);
     } finally {
       setFetchingModels(false);
     }
@@ -237,7 +267,10 @@ export function ProviderForm({
   const handleAddSelectedModels = async () => {
     const modelsToAdd = fetchedModels.filter(m => selectedFetchedModels.has(m.id));
     for (const model of modelsToAdd) {
-      await onAddModel(model.id, model.name);
+      await onAddModel(model.id, model.name, {
+        supportsVision: inferVisionSupport(model.id),
+        maxContextLength: 8000,
+      });
     }
     setShowModelPicker(false);
     setSelectedFetchedModels(new Set());
@@ -286,13 +319,13 @@ export function ProviderForm({
             </label>
             <div className="flex gap-2">
               <div className="relative flex-1">
-                <input
-                  type={showApiKey ? 'text' : 'password'}
-                  value={apiKey}
-                  onChange={(e) => setApiKey(e.target.value)}
-                  placeholder="sk-..."
-                  className="w-full px-3 py-2 pr-10 bg-slate-800 light:bg-white border border-slate-700 light:border-slate-300 rounded-lg text-sm text-slate-200 light:text-slate-800 placeholder-slate-500 light:placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-cyan-500/50 focus:border-cyan-500 transition-all"
-                />
+                 <input
+                   type={showApiKey ? 'text' : 'password'}
+                   value={apiKey}
+                   onChange={(e) => setApiKey(e.target.value)}
+                   placeholder={provider?.apiKey ? provider.apiKey : 'sk-...'}
+                   className="w-full px-3 py-2 pr-10 bg-slate-800 light:bg-white border border-slate-700 light:border-slate-300 rounded-lg text-sm text-slate-200 light:text-slate-800 placeholder-slate-500 light:placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-cyan-500/50 focus:border-cyan-500 transition-all"
+                 />
                 <button
                   type="button"
                   onClick={() => setShowApiKey(!showApiKey)}
@@ -353,24 +386,45 @@ export function ProviderForm({
             </Button>
           </div>
 
-          <div className="space-y-3">
-            <div className="flex gap-2">
-              <Input
-                placeholder={t('modelIdPlaceholder')}
-                value={newModelId}
-                onChange={(e) => setNewModelId(e.target.value)}
-                className="flex-1"
-              />
-              <Input
-                placeholder={t('displayNamePlaceholder')}
-                value={newModelName}
-                onChange={(e) => setNewModelName(e.target.value)}
-                className="flex-1"
-              />
-              <Button variant="secondary" onClick={handleAddModel} disabled={!newModelId.trim()}>
-                <Plus className="w-4 h-4" />
-              </Button>
-            </div>
+            <div className="space-y-3">
+              <div className="flex gap-2">
+                <Input
+                  placeholder={t('modelIdPlaceholder')}
+                  value={newModelId}
+                  onChange={(e) => setNewModelId(e.target.value)}
+                  className="flex-1"
+                />
+                <Input
+                  placeholder={t('displayNamePlaceholder')}
+                  value={newModelName}
+                  onChange={(e) => setNewModelName(e.target.value)}
+                  className="flex-1"
+                />
+                <Input
+                  placeholder={t('maxContextLengthPlaceholder')}
+                  value={newModelMaxContextLength}
+                  onChange={(e) => setNewModelMaxContextLength(e.target.value)}
+                  className="w-40"
+                  type="number"
+                  min={256}
+                  title={t('maxContextLength')}
+                />
+                <label
+                  className="flex items-center gap-2 px-3 py-2 rounded-lg bg-slate-800 light:bg-white border border-slate-700 light:border-slate-300 text-sm text-slate-200 light:text-slate-800"
+                  title={t('supportsVision')}
+                >
+                  <input
+                    type="checkbox"
+                    checked={newModelSupportsVision}
+                    onChange={(e) => setNewModelSupportsVision(e.target.checked)}
+                    className="w-4 h-4 rounded border-slate-600 light:border-slate-400 bg-slate-900 light:bg-white text-cyan-500 focus:ring-cyan-500/50"
+                  />
+                  <span className="text-xs whitespace-nowrap">{t('supportsVision')}</span>
+                </label>
+                <Button variant="secondary" onClick={handleAddModel} disabled={!newModelId.trim()}>
+                  <Plus className="w-4 h-4" />
+                </Button>
+              </div>
 
             <div className="bg-slate-800/50 light:bg-white rounded-lg border border-slate-700 light:border-slate-200 divide-y divide-slate-700 light:divide-slate-200">
               {models.length === 0 ? (
@@ -385,22 +439,22 @@ export function ProviderForm({
                   >
                     <div className="flex-1 min-w-0">
                       <p className="text-sm font-medium text-slate-200 light:text-slate-800">{model.name}</p>
-                      <p className="text-xs text-slate-500 light:text-slate-600">{model.model_id}</p>
+                      <p className="text-xs text-slate-500 light:text-slate-600">{model.modelId}</p>
                     </div>
                     <div className="flex items-center gap-2">
                       {/* 能力图标 */}
                       <div className="flex items-center gap-1">
-                        {(model.supports_vision ?? inferVisionSupport(model.model_id)) && (
+                        {(model.supportsVision ?? inferVisionSupport(model.modelId)) && (
                           <span title={t('supportsVision')} className="p-1 rounded bg-slate-700/50 light:bg-slate-200">
                             <Image className="w-3 h-3 text-cyan-400" />
                           </span>
                         )}
-                        {(model.supports_reasoning ?? inferReasoningSupport(model.model_id)) && (
+                        {(model.supportsReasoning ?? inferReasoningSupport(model.modelId)) && (
                           <span title={t('supportsReasoning')} className="p-1 rounded bg-slate-700/50 light:bg-slate-200">
                             <Brain className="w-3 h-3 text-purple-400" />
                           </span>
                         )}
-                        {(model.supports_function_calling ?? inferFunctionCallingSupport(model.model_id)) && (
+                        {(model.supportsFunctionCalling ?? inferFunctionCallingSupport(model.modelId)) && (
                           <span title={t('supportsFunctionCalling')} className="p-1 rounded bg-slate-700/50 light:bg-slate-200">
                             <Wrench className="w-3 h-3 text-amber-400" />
                           </span>

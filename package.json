@@ -6,19 +6,19 @@
   "scripts": {
     "dev": "pnpm --filter @ssrprompt/client dev",
     "dev:server": "pnpm --filter @ssrprompt/server dev",
-    "dev:all": "pnpm run --parallel dev dev:server",
+    "dev:all": "concurrently \"pnpm run dev\" \"pnpm run dev:server\"",
     "build": "pnpm --filter @ssrprompt/client build",
     "build:server": "pnpm --filter @ssrprompt/server build",
     "build:all": "pnpm run build && pnpm run build:server",
-    "lint": "pnpm --filter '*' lint",
-    "typecheck": "pnpm --filter '*' typecheck",
-    "db:generate": "pnpm --filter @ssrprompt/server prisma generate",
-    "db:push": "pnpm --filter @ssrprompt/server prisma db push",
-    "db:migrate": "pnpm --filter @ssrprompt/server prisma migrate dev",
-    "db:studio": "pnpm --filter @ssrprompt/server prisma studio"
+    "lint": "pnpm -r lint",
+    "typecheck": "pnpm -r typecheck",
+    "db:generate": "pnpm --filter @ssrprompt/server prisma:generate",
+    "db:push": "pnpm --filter @ssrprompt/server prisma:push",
+    "db:migrate": "pnpm --filter @ssrprompt/server prisma:migrate",
+    "db:studio": "pnpm --filter @ssrprompt/server prisma:studio"
   },
   "devDependencies": {
-    "concurrently": "^8.2.2",
+    "concurrently": "^9.2.1",
     "typescript": "^5.5.3"
   },
   "engines": {

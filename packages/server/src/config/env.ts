@@ -1,6 +1,16 @@
 import 'dotenv/config';
 import { z } from 'zod';
 
+function isValidUrl(value: string): boolean {
+  try {
+    // eslint-disable-next-line no-new
+    new URL(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Environment variable schema with validation
  * Server will crash on startup if required variables are missing
@@ -25,6 +35,29 @@ const envSchema = z.object({
   // Rate limiting (optional)
   RATE_LIMIT_WINDOW_MS: z.string().transform(Number).optional().default('60000'),
   RATE_LIMIT_MAX_REQUESTS: z.string().transform(Number).optional().default('100'),
+
+  // File Storage (S3 compatible, e.g. MinIO)
+  S3_ENDPOINT: z
+    .string()
+    .optional()
+    .transform((v) => {
+      if (!v) return undefined;
+      const trimmed = v.trim();
+      if (!trimmed) return undefined;
+      return /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+    })
+    .refine((v) => v === undefined || isValidUrl(v), {
+      message: 'S3_ENDPOINT must be a valid URL (or host, e.g. jpminio.zeabur.app)',
+    }),
+  S3_BUCKET: z.string().min(1).optional(),
+  S3_ACCESS_KEY_ID: z.string().min(1).optional(),
+  S3_SECRET_ACCESS_KEY: z.string().min(1).optional(),
+  S3_REGION: z.string().optional().default('us-east-1'),
+  S3_FORCE_PATH_STYLE: z
+    .string()
+    .optional()
+    .default('true')
+    .transform((v) => v === 'true' || v === '1'),
 });
 
 export type Env = z.infer<typeof envSchema>;

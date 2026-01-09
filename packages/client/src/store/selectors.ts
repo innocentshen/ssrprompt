@@ -8,7 +8,6 @@
  */
 
 import { useMemo } from 'react';
-import { shallow } from 'zustand/shallow';
 import { useGlobalStore } from './useGlobalStore';
 import { usePromptsStore } from './usePromptsStore';
 import { useTracesStore } from './useTracesStore';
@@ -35,7 +34,7 @@ export const useEnabledModels = () => {
     const enabledProviderIds = new Set(
       providers.filter(p => p.enabled).map(p => p.id)
     );
-    return models.filter(m => enabledProviderIds.has(m.provider_id));
+    return models.filter(m => enabledProviderIds.has(m.providerId));
   }, [providers, models]);
 };
 
@@ -104,16 +103,15 @@ export const useSelectedPrompt = () => {
 /**
  * Get editing state as a single object (with shallow comparison)
  */
-export const usePromptEditState = () => usePromptsStore(
-  state => ({
-    content: state.editingContent,
-    name: state.editingName,
-    messages: state.editingMessages,
-    config: state.editingConfig,
-    variables: state.editingVariables,
-  }),
-  shallow
-);
+export const usePromptEditState = () => {
+  const content = usePromptsStore(state => state.editingContent);
+  const name = usePromptsStore(state => state.editingName);
+  const messages = usePromptsStore(state => state.editingMessages);
+  const config = usePromptsStore(state => state.editingConfig);
+  const variables = usePromptsStore(state => state.editingVariables);
+
+  return useMemo(() => ({ content, name, messages, config, variables }), [content, name, messages, config, variables]);
+};
 
 /**
  * Get compare state
@@ -142,29 +140,23 @@ export const useFilteredTraces = () => {
   const traces = useTracesStore(state => state.traces);
   const selectedPromptId = useTracesStore(state => state.selectedPromptId);
   const filterStatus = useTracesStore(state => state.filterStatus);
-  const searchQuery = useTracesStore(state => state.searchQuery);
 
   return useMemo(() => {
     let result = traces;
 
     if (selectedPromptId) {
-      result = result.filter(t => t.prompt_id === selectedPromptId);
+      result = result.filter(t => t.promptId === selectedPromptId);
     }
 
     if (filterStatus !== 'all') {
       result = result.filter(t => t.status === filterStatus);
     }
 
-    if (searchQuery) {
-      const query = searchQuery.toLowerCase();
-      result = result.filter(t =>
-        t.input.toLowerCase().includes(query) ||
-        t.output.toLowerCase().includes(query)
-      );
-    }
+    // Note: TraceListItem doesn't have input/output fields, search disabled for list view
+    // Full search would require fetching full trace data
 
     return result;
-  }, [traces, selectedPromptId, filterStatus, searchQuery]);
+  }, [traces, selectedPromptId, filterStatus]);
 };
 
 // ============= Evaluation Store Selectors =============
@@ -204,7 +196,7 @@ export const useRunResults = () => {
 
   return useMemo(() => {
     if (!selectedRunId) return [];
-    return results.filter(r => r.run_id === selectedRunId);
+    return results.filter(r => r.runId === selectedRunId);
   }, [results, selectedRunId]);
 };
 

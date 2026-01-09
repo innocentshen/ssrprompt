@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import {
   Compass,
   FileText,
+  Globe,
   BarChart3,
   Eye,
   Settings,
@@ -18,6 +19,7 @@ interface SidebarProps {
 
 const navItemsConfig = [
   { id: 'home', nameKey: 'home', icon: Home },
+  { id: 'plaza', nameKey: 'plaza', icon: Globe },
   { id: 'prompts', nameKey: 'prompts', icon: FileText },
   { id: 'evaluation', nameKey: 'evaluation', icon: BarChart3 },
   { id: 'traces', nameKey: 'traces', icon: Eye },

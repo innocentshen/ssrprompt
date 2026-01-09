@@ -3,13 +3,35 @@ import { devtools } from 'zustand/middleware';
 import type {
   Prompt,
   PromptVersion,
-  PromptMessage,
-  PromptConfig,
   PromptVariable,
-} from '../types/database';
-import { DEFAULT_PROMPT_CONFIG } from '../types/database';
-import type { FileAttachment } from '../lib/ai-service';
-import { getDatabase } from '../lib/database';
+  FileAttachment,
+} from '../types';
+import { PromptMessage, PromptConfig, DEFAULT_PROMPT_CONFIG } from '../types/database';
+import { promptsApi } from '../api';
+import { invalidatePromptsCache } from '../lib/cache-events';
+
+// Type conversion helpers
+const toFrontendMessages = (messages: unknown): PromptMessage[] => {
+  const msgs = (messages || []) as Array<{ role?: string; content?: string; id?: string }>;
+  return msgs.map((m, i) => ({
+    id: m.id || `msg-${Date.now()}-${i}`,
+    role: (m.role || 'user') as PromptMessage['role'],
+    content: m.content || '',
+  }));
+};
+
+const toFrontendConfig = (config: unknown): PromptConfig => {
+  const c = (config || {}) as Record<string, unknown>;
+  return {
+    temperature: (c.temperature as number) ?? DEFAULT_PROMPT_CONFIG.temperature,
+    top_p: (c.top_p as number) ?? DEFAULT_PROMPT_CONFIG.top_p,
+    frequency_penalty: (c.frequency_penalty as number) ?? DEFAULT_PROMPT_CONFIG.frequency_penalty,
+    presence_penalty: (c.presence_penalty as number) ?? DEFAULT_PROMPT_CONFIG.presence_penalty,
+    max_tokens: (c.max_tokens as number) ?? DEFAULT_PROMPT_CONFIG.max_tokens,
+    output_schema: c.output_schema as PromptConfig['output_schema'],
+    reasoning: c.reasoning as PromptConfig['reasoning'],
+  };
+};
 
 // Debug run type (same as in DebugHistory component)
 export interface DebugRun {
@@ -226,24 +248,28 @@ export const usePromptsStore = create<PromptsState>()(
       // Actions implementation
       fetchPrompts: async () => {
         try {
-          const db = getDatabase();
-          const { data, error } = await db
-            .from('prompts')
-            .select('*')
-            .order('order_index')
-            .order('updated_at', { ascending: false });
+          const data = await promptsApi.list();
+          // Fetch full prompt data for each prompt
+          const prompts: Prompt[] = await Promise.all(
+            data.map(async (p) => {
+              const full = await promptsApi.getById(p.id);
+              return {
+                ...full,
+                description: full.description || '',
+                content: full.content || '',
+                variables: full.variables || [],
+                messages: full.messages || [],
+                config: full.config || DEFAULT_PROMPT_CONFIG,
+              };
+            })
+          );
 
-          if (error) {
-            console.error('Failed to fetch prompts:', error);
-            return;
-          }
-
-          set({ prompts: data || [] });
+          set({ prompts });
 
           // Auto-select first prompt if none selected
           const state = get();
-          if (data && data.length > 0 && !state.selectedPromptId) {
-            get().selectPrompt(data[0].id);
+          if (prompts.length > 0 && !state.selectedPromptId) {
+            get().selectPrompt(prompts[0].id);
           }
         } catch (error) {
           console.error('Failed to fetch prompts:', error);
@@ -252,14 +278,8 @@ export const usePromptsStore = create<PromptsState>()(
 
       fetchVersions: async (promptId: string) => {
         try {
-          const db = getDatabase();
-          const { data } = await db
-            .from('prompt_versions')
-            .select('*')
-            .eq('prompt_id', promptId)
-            .order('version', { ascending: false });
-
-          set({ versions: data || [] });
+          const versions = await promptsApi.getVersions(promptId);
+          set({ versions });
         } catch (error) {
           console.error('Failed to fetch versions:', error);
         }
@@ -271,12 +291,12 @@ export const usePromptsStore = create<PromptsState>()(
         if (prompt) {
           set({
             selectedPromptId: id,
-            editingContent: prompt.content,
+            editingContent: prompt.content || '',
             editingName: prompt.name,
-            editingMessages: prompt.messages || [],
-            editingConfig: prompt.config || DEFAULT_PROMPT_CONFIG,
+            editingMessages: toFrontendMessages(prompt.messages),
+            editingConfig: toFrontendConfig(prompt.config),
             editingVariables: prompt.variables || [],
-            selectedModelId: prompt.default_model_id || '',
+            selectedModelId: prompt.defaultModelId || '',
             autoSaveStatus: 'saved',
             // Reset test state
             testInput: '',
@@ -290,7 +310,9 @@ export const usePromptsStore = create<PromptsState>()(
           });
 
           // Fetch versions for this prompt
-          get().fetchVersions(id);
+          if (id) {
+            get().fetchVersions(id);
+          }
         } else {
           set({ selectedPromptId: null });
         }
@@ -391,37 +413,25 @@ export const usePromptsStore = create<PromptsState>()(
       // CRUD actions
       createPrompt: async (name: string) => {
         try {
-          const db = getDatabase();
-          const { data, error } = await db
-            .from('prompts')
-            .insert({
-              user_id: 'default',
-              name,
-              description: '',
-              content: '',
-              variables: [],
-              messages: [],
-              config: DEFAULT_PROMPT_CONFIG,
-              current_version: 1,
-              default_model_id: null,
-              order_index: get().prompts.length,
-            })
-            .select()
-            .single();
-
-          if (error || !data) {
-            console.error('Failed to create prompt:', error);
-            return null;
-          }
+          const data = await promptsApi.create({ name });
+          const newPrompt: Prompt = {
+            ...data,
+            description: data.description || '',
+            content: data.content || '',
+            variables: data.variables || [],
+            messages: data.messages || [],
+            config: data.config || DEFAULT_PROMPT_CONFIG,
+          };
 
           set(state => ({
-            prompts: [...state.prompts, data],
+            prompts: [...state.prompts, newPrompt],
             showNewPrompt: false,
             newPromptName: '',
           }));
 
-          get().selectPrompt(data.id);
-          return data;
+          invalidatePromptsCache(newPrompt);
+          get().selectPrompt(newPrompt.id);
+          return newPrompt;
         } catch (error) {
           console.error('Failed to create prompt:', error);
           return null;
@@ -430,13 +440,7 @@ export const usePromptsStore = create<PromptsState>()(
 
       deletePrompt: async (id: string) => {
         try {
-          const db = getDatabase();
-          const { error } = await db.from('prompts').delete().eq('id', id);
-
-          if (error) {
-            console.error('Failed to delete prompt:', error);
-            return false;
-          }
+          await promptsApi.delete(id);
 
           const state = get();
           const newPrompts = state.prompts.filter(p => p.id !== id);
@@ -470,17 +474,14 @@ export const usePromptsStore = create<PromptsState>()(
         const [removed] = prompts.splice(currentIndex, 1);
         prompts.splice(newIndex, 0, removed);
 
-        // Update order_index for all prompts
-        const updates = prompts.map((p, i) => ({ ...p, order_index: i }));
+        // Update orderIndex for all prompts
+        const updates = prompts.map((p, i) => ({ ...p, orderIndex: i }));
         set({ prompts: updates });
 
-        // Persist to database
+        // Persist to backend
         try {
-          const db = getDatabase();
-          await Promise.all(
-            updates.map(p =>
-              db.from('prompts').update({ order_index: p.order_index }).eq('id', p.id)
-            )
+          await promptsApi.batchUpdateOrder(
+            updates.map(p => ({ id: p.id, orderIndex: p.orderIndex }))
           );
         } catch (error) {
           console.error('Failed to update prompt order:', error);

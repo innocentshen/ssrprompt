@@ -9,5 +9,9 @@
   "directToWorkspace": "ワークスペースへ",
   "debugDescription": "既にプロンプトをお持ちですか？開発ワークスペースで直接テスト、比較、最適化を行えます。",
   "enterWorkspace": "ワークスペースに入る",
+  "explorePlaza": "プロンプト広場を探索",
+  "publicPrompts": "公開プロンプトを見る",
+  "plazaDescription": "コミュニティが共有した高品質なプロンプトを見つけて再利用できます。",
+  "enterPlaza": "プロンプト広場へ",
   "tip": "ヒント：サイドバーからいつでも他の機能に移動できます"
 }

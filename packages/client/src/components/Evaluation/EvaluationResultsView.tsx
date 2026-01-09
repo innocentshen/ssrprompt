@@ -1,9 +1,9 @@
 import { useState, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { CheckCircle2, XCircle, ChevronDown, ChevronRight, Clock, Zap, Paperclip, Eye, FileText, Image, Code, File } from 'lucide-react';
-import { Badge, MarkdownRenderer, Modal } from '../ui';
+import { Badge, MarkdownRenderer } from '../ui';
 import { AttachmentModal } from '../Prompt/AttachmentModal';
-import type { TestCase, TestCaseResult, EvaluationCriterion, FileAttachmentData } from '../../types';
+import type { TestCase, TestCaseResult, EvaluationCriterion, FileAttachment } from '../../types';
 import { getFileIconType } from '../../lib/file-utils';
 
 interface EvaluationResultsViewProps {
@@ -24,7 +24,7 @@ export function EvaluationResultsView({
   const { t } = useTranslation('evaluation');
   const [expandedResultId, setExpandedResultId] = useState<string | null>(null);
   const [expandedOutputs, setExpandedOutputs] = useState<Set<string>>(new Set());
-  const [previewAttachment, setPreviewAttachment] = useState<FileAttachmentData | null>(null);
+  const [previewAttachment, setPreviewAttachment] = useState<FileAttachment | null>(null);
 
   // 使用 Map 索引优化查询性能，避免 O(n²) 的查找问题
   const testCaseMap = useMemo(() => {
@@ -40,7 +40,7 @@ export function EvaluationResultsView({
 
   const getExpectedOutput = (testCaseId: string) => {
     const testCase = getTestCase(testCaseId);
-    return testCase?.expected_output || null;
+    return testCase?.expectedOutput || null;
   };
 
   const getTestCaseNotes = (testCaseId: string) => {
@@ -104,19 +104,19 @@ export function EvaluationResultsView({
         </div>
         <div className="p-4 bg-slate-800/50 light:bg-teal-50 border border-slate-700 light:border-teal-200 rounded-lg text-center">
           <p className="text-3xl font-bold text-teal-400 light:text-teal-600">
-            {results.reduce((sum, r) => sum + r.tokens_input, 0).toLocaleString()}
+            {results.reduce((sum, r) => sum + r.tokensInput, 0).toLocaleString()}
           </p>
           <p className="text-xs text-slate-500 light:text-slate-600 mt-1">{t('inputTokens')}</p>
         </div>
         <div className="p-4 bg-slate-800/50 light:bg-sky-50 border border-slate-700 light:border-sky-200 rounded-lg text-center">
           <p className="text-3xl font-bold text-sky-400 light:text-sky-600">
-            {results.reduce((sum, r) => sum + r.tokens_output, 0).toLocaleString()}
+            {results.reduce((sum, r) => sum + r.tokensOutput, 0).toLocaleString()}
           </p>
           <p className="text-xs text-slate-500 light:text-slate-600 mt-1">{t('outputTokens')}</p>
         </div>
         <div className="p-4 bg-slate-800/50 light:bg-amber-50 border border-slate-700 light:border-amber-200 rounded-lg text-center">
           <p className="text-3xl font-bold text-amber-400 light:text-amber-600">
-            {(results.reduce((sum, r) => sum + r.latency_ms, 0) / 1000).toFixed(1)}s
+            {(results.reduce((sum, r) => sum + r.latencyMs, 0) / 1000).toFixed(1)}s
           </p>
           <p className="text-xs text-slate-500 light:text-slate-600 mt-1">{t('totalTime')}</p>
         </div>
@@ -177,23 +177,23 @@ export function EvaluationResultsView({
                     <XCircle className="w-5 h-5 text-rose-500 light:text-rose-600 flex-shrink-0" />
                   )}
                   <span className="text-sm font-medium text-slate-200 light:text-slate-800 truncate">
-                    {getTestCaseName(result.test_case_id, index)}
+                    {getTestCaseName(result.testCaseId, index)}
                   </span>
-                  {getTestCaseAttachments(result.test_case_id).length > 0 && (
+                  {getTestCaseAttachments(result.testCaseId).length > 0 && (
                     <span className="flex items-center gap-1 text-xs text-slate-500 light:text-slate-600">
                       <Paperclip className="w-3 h-3" />
-                      {getTestCaseAttachments(result.test_case_id).length}
+                      {getTestCaseAttachments(result.testCaseId).length}
                     </span>
                   )}
                 </div>
                 <div className="flex items-center gap-4 text-xs text-slate-500 light:text-slate-600">
                   <span className="flex items-center gap-1">
                     <Clock className="w-3 h-3" />
-                    {result.latency_ms}ms
+                    {result.latencyMs}ms
                   </span>
                   <span className="flex items-center gap-1">
                     <Zap className="w-3 h-3" />
-                    {result.tokens_input + result.tokens_output} tokens
+                    {result.tokensInput + result.tokensOutput} tokens
                   </span>
                   {expandedResultId === result.id ? (
                     <ChevronDown className="w-4 h-4" />
@@ -224,8 +224,8 @@ export function EvaluationResultsView({
                             <span className="text-xs font-medium text-emerald-400 light:text-emerald-600">{t('expectedOutput')}</span>
                           </div>
                           <div className="p-3 bg-slate-900 light:bg-white text-sm max-h-64 overflow-y-auto">
-                            {getExpectedOutput(result.test_case_id) ? (
-                              <MarkdownRenderer content={getExpectedOutput(result.test_case_id)!} />
+                            {getExpectedOutput(result.testCaseId) ? (
+                              <MarkdownRenderer content={getExpectedOutput(result.testCaseId)!} />
                             ) : (
                               <span className="text-slate-500 light:text-slate-400 text-xs">{t('noExpectedOutput')}</span>
                             )}
@@ -236,8 +236,8 @@ export function EvaluationResultsView({
                             <span className="text-xs font-medium text-cyan-400 light:text-cyan-600">{t('modelOutput')}</span>
                           </div>
                           <div className="p-3 bg-slate-900 light:bg-white text-sm max-h-64 overflow-y-auto">
-                            {result.model_output ? (
-                              <MarkdownRenderer content={result.model_output} />
+                            {result.modelOutput ? (
+                              <MarkdownRenderer content={result.modelOutput} />
                             ) : (
                               <span className="text-slate-500 light:text-slate-400 text-xs">{t('noOutput')}</span>
                             )}
@@ -247,11 +247,11 @@ export function EvaluationResultsView({
                     )}
                   </div>
 
-                  {result.error_message && (
+                  {result.errorMessage && (
                     <div>
                       <p className="text-xs text-rose-400 light:text-rose-600 mb-1">{t('errorMessage')}</p>
                       <div className="p-3 bg-rose-950/30 light:bg-rose-50 rounded border border-rose-900/50 light:border-rose-200 text-sm text-rose-300 light:text-rose-700">
-                        {result.error_message}
+                        {result.errorMessage}
                       </div>
                     </div>
                   )}
@@ -281,9 +281,9 @@ export function EvaluationResultsView({
                                 {((result.scores[criterion.name] || 0) * 10).toFixed(1)}/10
                               </Badge>
                             </div>
-                            {result.ai_feedback[criterion.name] && (
+                            {result.aiFeedback[criterion.name] && (
                               <p className="text-xs text-slate-400 light:text-slate-600">
-                                {result.ai_feedback[criterion.name]}
+                                {result.aiFeedback[criterion.name]}
                               </p>
                             )}
                           </div>
@@ -292,25 +292,25 @@ export function EvaluationResultsView({
                     </div>
                   )}
 
-                  {getTestCaseNotes(result.test_case_id) && (
+                  {getTestCaseNotes(result.testCaseId) && (
                     <div>
                       <p className="text-xs text-slate-500 light:text-slate-600 mb-2">{t('testNotes')}</p>
                       <div className="p-3 bg-slate-800/50 light:bg-amber-50 rounded border border-slate-700 light:border-amber-200">
                         <p className="text-sm text-slate-400 light:text-amber-700 whitespace-pre-wrap">
-                          {getTestCaseNotes(result.test_case_id)}
+                          {getTestCaseNotes(result.testCaseId)}
                         </p>
                       </div>
                     </div>
                   )}
 
-                  {getTestCaseAttachments(result.test_case_id).length > 0 && (
+                  {getTestCaseAttachments(result.testCaseId).length > 0 && (
                     <div>
                       <p className="text-xs text-slate-500 light:text-slate-600 mb-2 flex items-center gap-1">
                         <Paperclip className="w-3 h-3" />
-                        {t('attachments')} ({getTestCaseAttachments(result.test_case_id).length})
+                        {t('attachments')} ({getTestCaseAttachments(result.testCaseId).length})
                       </p>
                       <div className="flex flex-wrap gap-2">
-                        {getTestCaseAttachments(result.test_case_id).map((attachment, i) => {
+                        {getTestCaseAttachments(result.testCaseId).map((attachment, i) => {
                           const Icon = getFileIcon(attachment);
                           return (
                             <button

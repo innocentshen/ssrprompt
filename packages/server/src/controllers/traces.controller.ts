@@ -41,7 +41,7 @@ export class TracesController {
 
       if (!trace) {
         return res.status(404).json({
-          error: { code: 'NOT_FOUND', message: 'Trace not found' },
+          error: { code: 'NOT_FOUND', message: 'Trace not found', requestId: req.requestId },
         });
       }
 

@@ -1,0 +1,127 @@
+import type { Request, Response, NextFunction } from 'express';
+import { AppError } from '@ssrprompt/shared';
+import { Readable } from 'node:stream';
+import { filesService } from '../services/files.service.js';
+
+type MulterRequest = Request & { file?: Express.Multer.File };
+
+function parseRangeHeader(rangeHeader: string | undefined): { start: number; end?: number } | null {
+  if (!rangeHeader) return null;
+
+  // Only support single range: bytes=start-end
+  const match = rangeHeader.match(/^bytes=(\d+)-(\d*)$/);
+  if (!match) return null;
+
+  const start = Number(match[1]);
+  const end = match[2] ? Number(match[2]) : undefined;
+
+  if (!Number.isFinite(start) || start < 0) return null;
+  if (end !== undefined && (!Number.isFinite(end) || end < start)) return null;
+
+  return { start, end };
+}
+
+export class FilesController {
+  /**
+   * POST /files
+   * Upload a file and store in S3-compatible storage (e.g., MinIO)
+   */
+  async upload(req: Request, res: Response, next: NextFunction) {
+    try {
+      const userId = req.user!.userId;
+      const file = (req as MulterRequest).file;
+
+      if (!file) {
+        throw new AppError(400, 'VALIDATION_ERROR', 'Missing file');
+      }
+
+      const record = await filesService.upload(userId, {
+        originalName: file.originalname,
+        mimeType: file.mimetype,
+        size: file.size,
+        buffer: file.buffer,
+      });
+
+      res.status(201).json({
+        data: {
+          id: record.id,
+          name: record.originalName,
+          type: record.mimeType,
+          size: record.size,
+          createdAt: record.createdAt,
+        },
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * GET /files/:id/meta
+   * Get file metadata
+   */
+  async getMeta(req: Request, res: Response, next: NextFunction) {
+    try {
+      const userId = req.user!.userId;
+      const record = await filesService.getMeta(userId, req.params.id);
+      res.json({
+        data: {
+          id: record.id,
+          name: record.originalName,
+          type: record.mimeType,
+          size: record.size,
+          createdAt: record.createdAt,
+        },
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * GET /files/:id
+   * Download/preview a file (supports Range)
+   */
+  async download(req: Request, res: Response, next: NextFunction) {
+    try {
+      const userId = req.user!.userId;
+      const range = parseRangeHeader(req.headers.range);
+
+      const { meta, body, contentLength, contentRange } = await filesService.download(userId, req.params.id, range);
+
+      res.setHeader('Content-Type', meta.mimeType);
+      res.setHeader('Accept-Ranges', 'bytes');
+      res.setHeader('Content-Disposition', `inline; filename="${meta.originalName.replace(/"/g, '')}"`);
+
+      if (range && contentRange) {
+        res.status(206);
+        res.setHeader('Content-Range', contentRange);
+      }
+
+      if (contentLength !== undefined) {
+        res.setHeader('Content-Length', String(contentLength));
+      } else if (!range) {
+        res.setHeader('Content-Length', String(meta.size));
+      }
+
+      if (!body) {
+        throw new AppError(500, 'INTERNAL_ERROR', 'Missing file body from storage');
+      }
+
+      const stream =
+        typeof (body as any).pipe === 'function'
+          ? (body as Readable)
+          : Readable.fromWeb(body as any);
+
+      stream.on('error', (err) => {
+        next(err);
+      });
+
+      stream.pipe(res);
+    } catch (error) {
+      next(error);
+    }
+  }
+}
+
+export const filesController = new FilesController();

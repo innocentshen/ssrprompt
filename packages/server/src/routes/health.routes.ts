@@ -1,11 +1,20 @@
-import { Router } from 'express';
+import { Router, type IRouter } from 'express';
 import { prisma } from '../config/database.js';
 
-const router = Router();
+const router: IRouter = Router();
 
 /**
- * GET /api/v1/health
- * Health check endpoint
+ * @swagger
+ * /health:
+ *   get:
+ *     tags: [Health]
+ *     summary: 健康检查
+ *     security: []
+ *     responses:
+ *       200:
+ *         description: 服务正常
+ *       503:
+ *         description: 服务异常
  */
 router.get('/', async (_req, res) => {
   try {

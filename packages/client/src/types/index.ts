@@ -1,5 +1,76 @@
-export * from './database';
+// Re-export all types from shared package (camelCase)
+export type {
+  // Provider types
+  Provider,
+  Model,
+  ProviderType,
+  CreateProviderDto,
+  UpdateProviderDto,
+  CreateModelDto,
+  UpdateModelDto,
 
+  // Prompt types - base types
+  Prompt,
+  PromptListItem,
+  PromptVersion,
+  PublicPromptListItem,
+  PublicPromptDetail,
+  CopyPublicPromptDto,
+  CreatePromptDto,
+  UpdatePromptDto,
+
+  // Evaluation types
+  Evaluation,
+  EvaluationStatus,
+  EvaluationConfig,
+  TestCase,
+  EvaluationCriterion,
+  EvaluationRun,
+  TestCaseResult,
+  ModelParameters,
+  CreateEvaluationDto,
+  UpdateEvaluationDto,
+  CreateTestCaseDto,
+  UpdateTestCaseDto,
+  CreateCriterionDto,
+  UpdateCriterionDto,
+  EvaluationDetail,
+
+  // Trace types
+  Trace,
+  TraceListItem,
+  TraceStatus,
+  FileAttachment,
+  CreateTraceDto,
+  PaginatedResponse,
+
+  // OCR types
+  OcrProvider,
+  OcrCredentialSource,
+  OcrProviderSettings,
+  UpdateOcrProviderSettingsDto,
+  OcrSystemProviderSettings,
+  UpdateOcrSystemProviderSettingsDto,
+  OcrTestResult,
+} from '@ssrprompt/shared';
+
+// Re-export frontend-specific types from database.ts
+export type {
+  ReasoningEffort,
+  PromptMessageRole,
+  PromptMessage,
+  PromptVariableType,
+  PromptVariable,
+  ReasoningConfig,
+  SchemaFieldType,
+  SchemaField,
+  OutputSchema,
+  PromptConfig,
+} from './database';
+
+export { DEFAULT_PROMPT_CONFIG } from './database';
+
+// Navigation types
 export type NavigationItem = {
   id: string;
   name: string;
@@ -12,6 +83,12 @@ export type ModalProps = {
   onClose: () => void;
 };
 
-export interface ProviderWithModels extends import('./database').Provider {
-  models?: import('./database').Model[];
+// Extended types
+import type { Provider as SharedProvider, Model as SharedModel, FileAttachment as SharedFileAttachment } from '@ssrprompt/shared';
+
+export interface ProviderWithModels extends SharedProvider {
+  models?: SharedModel[];
 }
+
+// Legacy type aliases for backwards compatibility (deprecated)
+export type FileAttachmentData = SharedFileAttachment;

@@ -42,7 +42,8 @@ export class ModelsService {
       modelId: data.modelId,
       name: data.name,
       capabilities: data.capabilities ?? [],
-      supportsVision: data.supportsVision ?? true,
+      maxContextLength: data.maxContextLength ?? 8000,
+      supportsVision: data.supportsVision ?? false,
       supportsReasoning: data.supportsReasoning ?? false,
       supportsFunctionCalling: data.supportsFunctionCalling ?? false,
     });

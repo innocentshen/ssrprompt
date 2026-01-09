@@ -21,9 +21,10 @@ export interface Trace {
 }
 
 export interface FileAttachment {
+  fileId: string;
   name: string;
   type: string;
-  base64: string;
+  size?: number;
 }
 
 export interface CreateTraceDto {
@@ -48,6 +49,7 @@ export interface TraceListItem {
   userId: string;
   promptId: string | null;
   modelId: string | null;
+  input: string;  // Added for preview
   tokensInput: number;
   tokensOutput: number;
   latencyMs: number;

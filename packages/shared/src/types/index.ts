@@ -1,8 +1,10 @@
 // Re-export all types
-export * from './provider';
-export * from './prompt';
-export * from './trace';
-export * from './evaluation';
+export * from './provider.js';
+export * from './prompt.js';
+export * from './trace.js';
+export * from './evaluation.js';
+export * from './auth.js';
+export * from './ocr.js';
 
 // Common API Response Types
 export interface ApiResponse<T> {
@@ -15,21 +17,5 @@ export interface ApiError {
     code: string;
     message: string;
     details?: unknown;
-  };
-}
-
-// Auth Types
-export interface JwtPayload {
-  userId: string;
-  tenantType: 'demo' | 'personal';
-  iat: number;
-  exp: number;
-}
-
-export interface AuthResponse {
-  token: string;
-  user: {
-    id: string;
-    tenantType: 'demo' | 'personal';
   };
 }

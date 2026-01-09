@@ -2,9 +2,10 @@ import { z } from 'zod';
 
 // File Attachment Schema
 export const FileAttachmentSchema = z.object({
+  fileId: z.string().uuid(),
   name: z.string(),
   type: z.string(),
-  base64: z.string(),
+  size: z.number().int().min(0).optional(),
 });
 
 // Model Parameters Schema
@@ -21,6 +22,8 @@ export const EvaluationConfigSchema = z.object({
   pass_threshold: z.number().min(0).max(100).optional(),
   model_parameters: ModelParametersSchema.optional(),
   inherited_from_prompt: z.boolean().optional(),
+  file_processing: z.enum(['auto', 'vision', 'ocr', 'none']).optional(),
+  ocr_provider: z.enum(['paddle', 'datalab']).optional(),
 });
 
 // Create Evaluation Schema
@@ -41,13 +44,14 @@ export const UpdateEvaluationSchema = z.object({
   status: z.enum(['pending', 'running', 'completed', 'failed']).optional(),
   config: EvaluationConfigSchema.optional(),
   results: z.record(z.unknown()).optional(),
+  isPublic: z.boolean().optional(),
   completedAt: z.string().datetime().nullable().optional(),
 });
 
 // Create Test Case Schema
 export const CreateTestCaseSchema = z.object({
   name: z.string().optional().default(''),
-  inputText: z.string().min(1, 'Input text is required'),
+  inputText: z.string().optional().default(''),
   inputVariables: z.record(z.string()).optional().default({}),
   attachments: z.array(FileAttachmentSchema).optional().default([]),
   expectedOutput: z.string().optional(),
