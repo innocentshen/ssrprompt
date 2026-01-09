@@ -215,10 +215,15 @@ CREATE INDEX IF NOT EXISTS idx_traces_user_id ON traces(user_id);
 CREATE INDEX IF NOT EXISTS idx_traces_created_at ON traces(created_at DESC);
 
 -- =====================================================
--- 5. 记录初始迁移版本
+-- 5. 记录迁移版本（标记为最新版本，避免重复升级）
 -- =====================================================
 
+-- 初始化脚本已包含所有迁移内容，直接记录到最新版本
 INSERT INTO schema_migrations (version, name) VALUES (1, 'initial') ON CONFLICT (version) DO NOTHING;
+INSERT INTO schema_migrations (version, name) VALUES (3, 'add_model_vision_support') ON CONFLICT (version) DO NOTHING;
+INSERT INTO schema_migrations (version, name) VALUES (4, 'add_reasoning_support') ON CONFLICT (version) DO NOTHING;
+INSERT INTO schema_migrations (version, name) VALUES (5, 'add_evaluation_model_params') ON CONFLICT (version) DO NOTHING;
+INSERT INTO schema_migrations (version, name) VALUES (6, 'add_attachments_column') ON CONFLICT (version) DO NOTHING;
 
 -- =====================================================
 -- 初始化完成！

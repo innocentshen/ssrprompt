@@ -37,6 +37,9 @@ CREATE TABLE IF NOT EXISTS models (
   model_id VARCHAR(255) NOT NULL,
   name VARCHAR(255) NOT NULL,
   capabilities JSON,
+  supports_vision BOOLEAN DEFAULT TRUE,
+  supports_reasoning BOOLEAN DEFAULT FALSE,
+  supports_function_calling BOOLEAN DEFAULT FALSE,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   INDEX idx_models_provider_id (provider_id),
   FOREIGN KEY (provider_id) REFERENCES providers(id) ON DELETE CASCADE
@@ -209,6 +212,9 @@ CREATE TABLE IF NOT EXISTS models (
   model_id text NOT NULL,
   name text NOT NULL,
   capabilities text[] DEFAULT '{}',
+  supports_vision boolean DEFAULT true,
+  supports_reasoning boolean DEFAULT false,
+  supports_function_calling boolean DEFAULT false,
   created_at timestamptz DEFAULT now()
 );
 
