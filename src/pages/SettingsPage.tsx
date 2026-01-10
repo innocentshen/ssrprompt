@@ -11,6 +11,7 @@ import { OptimizationSettings } from '../components/Settings/OptimizationSetting
 import { useToast, Button, Input } from '../components/ui';
 import { getDatabase, isDatabaseConfigured } from '../lib/database';
 import { isDemoMode, verifyDemoSettingsPassword } from '../lib/tenant';
+import { invalidateProvidersCache, invalidateModelsCache } from '../lib/cache-events';
 import type { Provider, Model, ProviderType } from '../types';
 
 type SettingsTab = 'providers' | 'database' | 'optimization' | 'capability-test';
@@ -112,6 +113,7 @@ export function SettingsPage() {
       if (data) {
         setProviders((prev) => [...prev, data]);
         setSelectedProviderId(data.id);
+        invalidateProvidersCache(data); // 通知其他组件更新
         showToast('success', t('providerAddedSuccess'));
       }
     } catch {
@@ -138,6 +140,7 @@ export function SettingsPage() {
       setProviders((prev) =>
         prev.map((p) => (p.id === selectedProviderId ? { ...p, ...data } : p))
       );
+      invalidateProvidersCache({ id: selectedProviderId, ...data }); // 通知其他组件更新
       showToast('success', t('configSaved'));
     } catch {
       showToast('error', t('saveConfigFailed'));
@@ -190,6 +193,9 @@ export function SettingsPage() {
       setProviders(remaining);
       setModels((prev) => prev.filter((m) => m.provider_id !== selectedProviderId));
       setSelectedProviderId(remaining[0]?.id || null);
+      // 通知其他组件更新
+      invalidateProvidersCache();
+      invalidateModelsCache();
       showToast('success', t('providerDeletedSuccess'));
     } catch {
       showToast('error', t('deleteProviderFailed'));
@@ -218,6 +224,7 @@ export function SettingsPage() {
 
       if (data) {
         setModels((prev) => [...prev, data]);
+        invalidateModelsCache(data); // 通知其他组件更新
         showToast('success', t('modelAddedSuccess'));
       }
     } catch {
@@ -240,6 +247,7 @@ export function SettingsPage() {
       setModels((prev) =>
         prev.map((m) => (m.id === modelId ? { ...m, supports_vision: supportsVision } : m))
       );
+      invalidateModelsCache({ id: modelId, supports_vision: supportsVision }); // 通知其他组件更新
     } catch {
       showToast('error', t('updateModelFailed'));
     }
@@ -255,6 +263,7 @@ export function SettingsPage() {
       }
 
       setModels((prev) => prev.filter((m) => m.id !== modelId));
+      invalidateModelsCache({ id: modelId, deleted: true }); // 通知其他组件更新
       showToast('success', t('modelDeletedSuccess'));
     } catch {
       showToast('error', t('deleteModelFailed'));

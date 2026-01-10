@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { devtools } from 'zustand/middleware';
 import type { Provider, Model } from '../types/database';
 import { getDatabase } from '../lib/database';
+import { cacheEvents } from '../lib/cache-events';
 
 interface GlobalState {
   // Data
@@ -129,3 +130,11 @@ export const useGlobalStore = create<GlobalState>()(
     { name: 'global-store' }
   )
 );
+
+// 订阅缓存失效事件，自动使缓存失效
+cacheEvents.subscribe((type) => {
+  if (type === 'providers' || type === 'models') {
+    // 使缓存失效，下次访问时重新获取数据
+    useGlobalStore.setState({ lastFetched: null });
+  }
+});

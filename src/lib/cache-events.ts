@@ -11,7 +11,12 @@ type CacheEventListener = (type: CacheEventType, data?: unknown) => void;
 interface PendingUpdate {
   type: CacheEventType;
   data: unknown;
+  timestamp: number;
 }
+
+// 配置常量
+const MAX_PENDING_UPDATES = 50; // 队列最大长度
+const PENDING_UPDATE_TTL = 5 * 60 * 1000; // 待更新数据 5 分钟过期
 
 class CacheEventEmitter {
   private listeners: Set<CacheEventListener> = new Set();
@@ -34,7 +39,9 @@ class CacheEventEmitter {
   invalidate(type: CacheEventType, data?: unknown): void {
     // 保存待更新的数据
     if (data) {
-      this.pendingUpdates.push({ type, data });
+      this.pendingUpdates.push({ type, data, timestamp: Date.now() });
+      // 清理过期和超量的待更新数据
+      this.cleanupPendingUpdates();
     }
     // 通知所有监听器
     this.listeners.forEach((listener) => {
@@ -47,11 +54,27 @@ class CacheEventEmitter {
   }
 
   /**
+   * 清理过期和超量的待更新数据
+   */
+  private cleanupPendingUpdates(): void {
+    const now = Date.now();
+    // 移除过期数据
+    this.pendingUpdates = this.pendingUpdates.filter(
+      (u) => now - u.timestamp < PENDING_UPDATE_TTL
+    );
+    // 如果仍然超量，移除最旧的
+    if (this.pendingUpdates.length > MAX_PENDING_UPDATES) {
+      this.pendingUpdates = this.pendingUpdates.slice(-MAX_PENDING_UPDATES);
+    }
+  }
+
+  /**
    * 获取并清除指定类型的待更新数据
    */
   consumePendingUpdates(type: CacheEventType): unknown[] {
+    const now = Date.now();
     const updates = this.pendingUpdates
-      .filter((u) => u.type === type)
+      .filter((u) => u.type === type && now - u.timestamp < PENDING_UPDATE_TTL)
       .map((u) => u.data);
     this.pendingUpdates = this.pendingUpdates.filter((u) => u.type !== type);
     return updates;
@@ -61,7 +84,17 @@ class CacheEventEmitter {
    * 检查是否有待处理的更新
    */
   hasPendingUpdates(type: CacheEventType): boolean {
-    return this.pendingUpdates.some((u) => u.type === type);
+    const now = Date.now();
+    return this.pendingUpdates.some(
+      (u) => u.type === type && now - u.timestamp < PENDING_UPDATE_TTL
+    );
+  }
+
+  /**
+   * 清除所有待更新数据
+   */
+  clearAllPendingUpdates(): void {
+    this.pendingUpdates = [];
   }
 }
 

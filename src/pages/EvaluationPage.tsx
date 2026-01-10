@@ -146,16 +146,33 @@ export function EvaluationPage() {
       if (type === 'prompts') {
         // 清除列表缓存，下次加载时会重新获取数据
         listCache = null;
-        // 如果有更新的 prompt 数据，直接更新 prompts 状态
+
         if (data && typeof data === 'object' && 'id' in data) {
-          setPrompts((prev) =>
-            prev.map((p) => (p.id === (data as Prompt).id ? (data as Prompt) : p))
-          );
-          // 同时更新 listCache（如果存在）
-          if (listCache) {
-            listCache.prompts = listCache.prompts.map((p) =>
-              p.id === (data as Prompt).id ? (data as Prompt) : p
+          const promptData = data as { id: string; deleted?: boolean } & Partial<Prompt>;
+
+          if (promptData.deleted) {
+            // 删除：从列表中移除
+            setPrompts((prev) => prev.filter((p) => p.id !== promptData.id));
+            // 同时清除关联该 Prompt 的评测的 prompt_id
+            setEvaluations((prev) =>
+              prev.map((e) => (e.prompt_id === promptData.id ? { ...e, prompt_id: null } : e))
             );
+            // 如果当前选中的评测关联了被删除的 Prompt，更新选中状态
+            setSelectedEvaluation((prev) =>
+              prev && prev.prompt_id === promptData.id ? { ...prev, prompt_id: null } : prev
+            );
+          } else {
+            // 检查是否存在
+            setPrompts((prev) => {
+              const exists = prev.some((p) => p.id === promptData.id);
+              if (exists) {
+                // 更新：更新列表中的条目
+                return prev.map((p) => (p.id === promptData.id ? { ...p, ...promptData } as Prompt : p));
+              } else {
+                // 新增：添加到列表
+                return [promptData as Prompt, ...prev];
+              }
+            });
           }
         }
       }
@@ -351,13 +368,38 @@ export function EvaluationPage() {
 
     // 检查是否有 prompts 更新（精确更新缓存，而不是全量刷新）
     if (cacheEvents.hasPendingUpdates('prompts')) {
-      const updatedPrompts = cacheEvents.consumePendingUpdates('prompts') as Prompt[];
-      if (listCache && updatedPrompts.length > 0) {
-        // 只更新缓存中对应的 prompt，保留其他数据
-        listCache.prompts = listCache.prompts.map((p) => {
-          const updated = updatedPrompts.find((u) => u.id === p.id);
-          return updated || p;
-        });
+      const pendingUpdates = cacheEvents.consumePendingUpdates('prompts') as Array<
+        { id: string; deleted?: boolean } & Partial<Prompt>
+      >;
+      if (listCache && pendingUpdates.length > 0) {
+        let nextPrompts = listCache.prompts;
+        let nextEvaluations = listCache.evaluations;
+
+        for (const update of pendingUpdates) {
+          if (!update || typeof update !== 'object' || !('id' in update)) continue;
+          if (update.deleted) {
+            nextPrompts = nextPrompts.filter((p) => p.id !== update.id);
+            nextEvaluations = nextEvaluations.map((e) =>
+              e.prompt_id === update.id ? { ...e, prompt_id: null } : e
+            );
+            continue;
+          }
+
+          const exists = nextPrompts.some((p) => p.id === update.id);
+          if (exists) {
+            nextPrompts = nextPrompts.map((p) =>
+              p.id === update.id ? ({ ...p, ...update } as Prompt) : p
+            );
+          } else {
+            nextPrompts = [update as Prompt, ...nextPrompts];
+          }
+        }
+
+        listCache = {
+          ...listCache,
+          prompts: nextPrompts,
+          evaluations: nextEvaluations,
+        };
       }
     }
 
@@ -1471,9 +1513,13 @@ export function EvaluationPage() {
     }
 
     setSelectedEvaluation((prev) => prev ? { ...prev, [field]: value } : null);
-    setEvaluations((prev) =>
-      prev.map((e) => (e.id === selectedEvaluation.id ? { ...e, [field]: value } : e))
-    );
+    setEvaluations((prev) => {
+      const next = prev.map((e) =>
+        e.id === selectedEvaluation.id ? { ...e, [field]: value } : e
+      );
+      updateListCache({ evaluations: next });
+      return next;
+    });
   };
 
   const handleUpdateConfig = async (key: string, value: number | ModelParameters | boolean) => {

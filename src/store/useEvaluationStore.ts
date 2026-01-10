@@ -9,8 +9,12 @@ import type {
   EvaluationRun,
 } from '../types/database';
 import { getDatabase, isDatabaseConfigured } from '../lib/database';
+import { cacheEvents } from '../lib/cache-events';
 
 type TabType = 'testcases' | 'criteria' | 'history' | 'results';
+
+// LRU 缓存配置
+const MAX_CACHE_SIZE = 10; // 最多缓存 10 个评测详情
 
 // 缓存数据结构
 interface EvaluationCache {
@@ -19,6 +23,7 @@ interface EvaluationCache {
   runs: EvaluationRun[];
   results: TestCaseResult[];
   selectedRunId: string | null;
+  lastAccessed: number; // LRU 时间戳
 }
 
 interface EvaluationState {
@@ -249,7 +254,7 @@ export const useEvaluationStore = create<EvaluationState>()(
             });
           }
 
-          // 存入缓存
+          // 存入缓存（带 LRU 时间戳）
           const newCache = new Map(get().cache);
           newCache.set(evaluationId, {
             testCases,
@@ -257,7 +262,22 @@ export const useEvaluationStore = create<EvaluationState>()(
             runs,
             results,
             selectedRunId,
+            lastAccessed: Date.now(),
           });
+          // LRU 淘汰：超过最大缓存数时移除最旧的
+          if (newCache.size > MAX_CACHE_SIZE) {
+            let oldestKey: string | null = null;
+            let oldestTime = Infinity;
+            newCache.forEach((value, key) => {
+              if (value.lastAccessed < oldestTime) {
+                oldestTime = value.lastAccessed;
+                oldestKey = key;
+              }
+            });
+            if (oldestKey) {
+              newCache.delete(oldestKey);
+            }
+          }
           set({ cache: newCache });
         } catch (error) {
           console.error('Failed to fetch evaluation details:', error);
@@ -304,6 +324,9 @@ export const useEvaluationStore = create<EvaluationState>()(
 
         if (cached) {
           // 有缓存，直接使用，不显示加载状态
+          // 同时更新 LRU 时间戳
+          const newCache = new Map(state.cache);
+          newCache.set(id, { ...cached, lastAccessed: Date.now() });
           set({
             selectedEvaluationId: id,
             testCases: cached.testCases,
@@ -313,6 +336,7 @@ export const useEvaluationStore = create<EvaluationState>()(
             selectedRunId: cached.selectedRunId,
             activeTab: 'testcases',
             detailsLoading: false,
+            cache: newCache,
           });
         } else {
           // 没有缓存，清空当前数据并开始加载
@@ -799,3 +823,53 @@ export const useSelectedRun = () => {
   const selectedRunId = useEvaluationStore(state => state.selectedRunId);
   return runs.find(r => r.id === selectedRunId) || null;
 };
+
+// 订阅缓存失效事件，自动刷新相关数据
+cacheEvents.subscribe((type, data) => {
+  const store = useEvaluationStore.getState();
+
+  if (type === 'prompts') {
+    // Prompt 更新时，刷新 prompts 列表
+    if (data && typeof data === 'object' && 'id' in data) {
+      const promptData = data as { id: string; deleted?: boolean } & Partial<Prompt>;
+
+      if (promptData.deleted) {
+        // 删除：从列表中移除
+        useEvaluationStore.setState({
+          prompts: store.prompts.filter(p => p.id !== promptData.id),
+          // 同时清除关联该 Prompt 的评测的 prompt_id
+          evaluations: store.evaluations.map(e =>
+            e.prompt_id === promptData.id ? { ...e, prompt_id: null } : e
+          ),
+        });
+      } else {
+        // 检查是否存在
+        const exists = store.prompts.some(p => p.id === promptData.id);
+        if (exists) {
+          // 更新：更新列表中的条目
+          useEvaluationStore.setState({
+            prompts: store.prompts.map(p =>
+              p.id === promptData.id ? { ...p, ...promptData } as Prompt : p
+            ),
+          });
+        } else {
+          // 新增：添加到列表
+          useEvaluationStore.setState({
+            prompts: [promptData as Prompt, ...store.prompts],
+          });
+        }
+      }
+    } else {
+      // 全量刷新
+      store.fetchPrompts();
+    }
+  } else if (type === 'evaluations') {
+    // 评测更新时，刷新列表并清除相关缓存
+    if (data && typeof data === 'object' && 'id' in data) {
+      const evaluationId = (data as { id: string }).id;
+      store.clearCache(evaluationId);
+    }
+    // 标记列表需要刷新
+    useEvaluationStore.setState({ listLoaded: false });
+  }
+});

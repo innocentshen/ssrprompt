@@ -362,6 +362,54 @@ export function PromptsPage() {
         setSelectedPrompt(data);
         setNewPromptName('');
         setShowNewPrompt(false);
+        // 通知其他页面刷新 prompts 缓存
+        invalidatePromptsCache(data);
+        showToast('success', t('promptCreated'));
+      }
+    } catch {
+      showToast('error', t('createPromptFailed'));
+    }
+  };
+
+  const handleQuickCopyPrompt = async (prompt: Prompt) => {
+    try {
+      const maxOrder = prompts.reduce((max, p) => Math.max(max, p.order_index || 0), 0);
+      const copyLabel = tCommon('copy');
+      const existingNames = new Set(prompts.map((p) => p.name));
+      let newName = `${prompt.name} (${copyLabel})`;
+      if (existingNames.has(newName)) {
+        let suffix = 2;
+        while (existingNames.has(`${prompt.name} (${copyLabel} ${suffix})`)) {
+          suffix += 1;
+        }
+        newName = `${prompt.name} (${copyLabel} ${suffix})`;
+      }
+
+      const { data, error } = await getDatabase()
+        .from('prompts')
+        .insert({
+          name: newName,
+          description: prompt.description || '',
+          content: prompt.content || '',
+          variables: prompt.variables || [],
+          messages: prompt.messages || [],
+          config: prompt.config || DEFAULT_PROMPT_CONFIG,
+          current_version: 1,
+          default_model_id: prompt.default_model_id || null,
+          order_index: maxOrder + 1,
+        })
+        .select()
+        .single();
+
+      if (error) {
+        showToast('error', t('createFailed') + ': ' + error.message);
+        return;
+      }
+
+      if (data) {
+        setPrompts((prev) => [data, ...prev]);
+        setSelectedPrompt(data);
+        invalidatePromptsCache(data);
         showToast('success', t('promptCreated'));
       }
     } catch {
@@ -679,7 +727,16 @@ export function PromptsPage() {
   const handleDeletePrompt = async () => {
     if (!selectedPrompt) return;
     try {
-      const { error } = await getDatabase().from('prompts').delete().eq('id', selectedPrompt.id);
+      const db = getDatabase();
+
+      // 先清除所有关联该 Prompt 的评测
+      await db
+        .from('evaluations')
+        .update({ prompt_id: null })
+        .eq('prompt_id', selectedPrompt.id);
+
+      // 再删除 Prompt
+      const { error } = await db.from('prompts').delete().eq('id', selectedPrompt.id);
       if (error) {
         showToast('error', t('deleteFailed') + ': ' + error.message);
         return;
@@ -687,6 +744,8 @@ export function PromptsPage() {
       const remaining = prompts.filter((p) => p.id !== selectedPrompt.id);
       setPrompts(remaining);
       setSelectedPrompt(remaining[0] || null);
+      // 通知其他页面刷新 prompts 缓存
+      invalidatePromptsCache({ id: selectedPrompt.id, deleted: true });
       showToast('success', t('promptDeleted'));
     } catch {
       showToast('error', t('deleteFailed'));
@@ -1385,7 +1444,7 @@ export function PromptsPage() {
                 onDragOver={(e) => handleDragOver(e, index)}
                 onDragEnd={handleDragEnd}
                 onClick={() => setSelectedPrompt(prompt)}
-                className={`w-full flex items-start gap-2 p-3 rounded-lg text-left transition-colors cursor-pointer ${
+                className={`w-full flex items-start gap-2 p-3 rounded-lg text-left transition-colors cursor-pointer group ${
                   selectedPrompt?.id === prompt.id
                     ? 'bg-slate-800 light:bg-cyan-50 border border-slate-600 light:border-cyan-200'
                     : 'hover:bg-slate-800/50 light:hover:bg-slate-100 border border-transparent'
@@ -1412,6 +1471,20 @@ export function PromptsPage() {
                     </div>
                   )}
                 </div>
+                <button
+                  type="button"
+                  onMouseDown={(e) => e.stopPropagation()}
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    handleQuickCopyPrompt(prompt);
+                  }}
+                  className="p-1 rounded text-slate-500 light:text-slate-400 hover:text-slate-200 light:hover:text-slate-600 hover:bg-slate-700/60 light:hover:bg-slate-200 transition-colors opacity-0 group-hover:opacity-100 focus:opacity-100"
+                  title={tCommon('copy')}
+                  aria-label={tCommon('copy')}
+                >
+                  <Copy className="w-4 h-4" />
+                </button>
               </div>
             );
           })}
