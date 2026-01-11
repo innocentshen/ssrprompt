@@ -385,16 +385,46 @@ const envSchema = z.object({
 
 ## 部署
 
+### 部署架构
+
+- **前端（Web）**：静态资源（`pnpm build` 输出到 `dist/client`），可部署到 Nginx / Vercel / OSS 等
+- **后端（API）**：Node.js + Express（默认 `:3001`）
+- **数据库**：PostgreSQL（必需）
+- **对象存储**：S3 兼容（可选，但启用附件/文件上传功能需要；可用 MinIO / AWS S3 / Cloudflare R2 等）
+
+> 现在还要部署 MinIO 吗？
+>
+> - **需要上传/预览附件（图片、PDF、文件等）**：需要配置 S3 兼容对象存储（可自建 MinIO，也可用云厂商 S3/R2）
+> - **不使用附件功能**：可以不部署/不配置对象存储；服务仍可启动，但与文件相关的接口会报 `S3 storage is not configured`
+
 ### 环境变量配置
 
-生产环境必须配置：
+生产环境后端（`packages/server`）必须配置：
 
 ```env
 NODE_ENV=production
 DATABASE_URL=postgresql://...
 JWT_SECRET=<强随机字符串，至少32字符>
 ENCRYPTION_KEY=<64位十六进制字符串>
-CORS_ORIGINS=https://your-domain.com
+CORS_ORIGIN=https://your-domain.com
+
+# 可选：用于 seed 创建管理员账号
+ADMIN_EMAIL=admin@example.com
+ADMIN_PASSWORD=ChangeMe123!
+
+# 可选：对象存储（S3 兼容；启用附件/文件上传必填）
+S3_ENDPOINT=https://minio.your-domain.com
+S3_BUCKET=ssrprompt
+S3_ACCESS_KEY_ID=your-access-key
+S3_SECRET_ACCESS_KEY=your-secret-key
+S3_REGION=us-east-1
+S3_FORCE_PATH_STYLE=true
+```
+
+前端（`packages/client`）在构建时配置：
+
+```env
+VITE_API_URL=https://api.your-domain.com/api/v1
 ```
 
 ### 构建
@@ -405,6 +435,20 @@ pnpm build
 
 # 构建后端
 pnpm build:server
+```
+
+### 启动
+
+```bash
+# 初始化数据库（首次部署）
+pnpm db:generate
+pnpm db:push
+
+# 可选：初始化系统角色/权限，并创建管理员账号（需先配置 ADMIN_EMAIL / ADMIN_PASSWORD）
+pnpm --filter @ssrprompt/server prisma:seed
+
+# 启动后端
+pnpm --filter @ssrprompt/server start
 ```
 
 ## 开发指南
