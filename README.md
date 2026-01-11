@@ -26,6 +26,7 @@ SSRPrompt v2.0 采用全新的前后端分离架构，带来更好的安全性�
 ### 核心功能
 
 - **Prompt 开发** - 可视化界面开发和管理 AI Prompts，支持变量、多轮对话、结构化输出
+- **Prompt 列表快捷操作** - 支持一键复制 Prompt、删除（二次确认）
 - **Prompt 创建向导** - AI 驱动的对话式 Prompt 创建流程，支持模板快速开始
 - **评测中心** - 对 Prompts 进行系统化评测和对比，支持自定义评价标准和 AI 评分
 - **历史记录** - 追踪和查看 Prompt 执行历史，包含 Token 消耗和延迟统计
@@ -109,6 +110,10 @@ JWT_SECRET=your-jwt-secret-at-least-32-characters-long
 # 加密密钥（64位十六进制字符串）
 ENCRYPTION_KEY=your-64-character-hex-string-for-aes-256-encryption
 
+# 可选：用于 seed 创建管理员账号
+ADMIN_EMAIL=admin@example.com
+ADMIN_PASSWORD=ChangeMe123!
+
 # 生成 ENCRYPTION_KEY:
 # node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 ```
@@ -124,6 +129,9 @@ pnpm db:push
 
 # 可选：打开 Prisma Studio
 pnpm db:studio
+
+# 可选：初始化系统角色/权限，并创建管理员账号（需先配置 ADMIN_EMAIL / ADMIN_PASSWORD）
+pnpm --filter @ssrprompt/server prisma:seed
 ```
 
 ### 启动开发服务器
@@ -196,10 +204,18 @@ ssrprompt/
 
 ## API 文档
 
+推荐以 Swagger 为准：`http://localhost:3001/api-docs`
+
 ### 认证
 
 ```
-POST /api/v1/auth/demo-token    # 获取 Demo Token
+POST /api/v1/auth/register          # 用户注册
+POST /api/v1/auth/login             # 用户登录
+POST /api/v1/auth/logout            # 退出登录
+POST /api/v1/auth/refresh           # 刷新 Token
+GET  /api/v1/auth/me                # 获取当前用户
+POST /api/v1/auth/change-password   # 修改密码
+GET  /api/v1/auth/demo-token        # 获取 Demo Token
 ```
 
 ### 服务商和模型
