@@ -140,6 +140,11 @@ export function PromptsPage() {
   const [newPromptName, setNewPromptName] = useState('');
   const [attachedFiles, setAttachedFiles] = useState<FileAttachment[]>([]);
   const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
+  const [copyingPromptId, setCopyingPromptId] = useState<string | null>(null);
+  const [deletingPromptId, setDeletingPromptId] = useState<string | null>(null);
+  const [loadingPromptId, setLoadingPromptId] = useState<string | null>(null);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [deleteConfirmTarget, setDeleteConfirmTarget] = useState<{ id: string; name: string } | null>(null);
   const [activeTab, setActiveTab] = useState<TabType>('edit');
   const [debugRuns, setDebugRuns] = useState<DebugRun[]>([]);
   const [selectedDebugRun, setSelectedDebugRun] = useState<DebugRun | null>(null);
@@ -151,6 +156,7 @@ export function PromptsPage() {
   const [optimizeModelId, setOptimizeModelId] = useState('');
   const [previewAttachment, setPreviewAttachment] = useState<FileAttachment | null>(null);
   const compareFileInputRef = useRef<HTMLInputElement>(null);
+  const selectPromptRequestIdRef = useRef(0);
 
   useEffect(() => {
     loadData();
@@ -268,6 +274,27 @@ export function PromptsPage() {
     }
   };
 
+  const handleSelectPrompt = async (promptId: string) => {
+    if (loadingPromptId === promptId || selectedPrompt?.id === promptId) return;
+
+    const requestId = ++selectPromptRequestIdRef.current;
+    setLoadingPromptId(promptId);
+    setSelectedPrompt(null);
+
+    try {
+      const fullPrompt = await promptsApi.getById(promptId);
+      if (selectPromptRequestIdRef.current !== requestId) return;
+      setSelectedPrompt(fullPrompt);
+    } catch (e) {
+      if (selectPromptRequestIdRef.current !== requestId) return;
+      showToast('error', t('loadFailed') + ': ' + (e instanceof Error ? e.message : 'Unknown error'));
+    } finally {
+      if (selectPromptRequestIdRef.current === requestId) {
+        setLoadingPromptId(null);
+      }
+    }
+  };
+
   const handleCreatePrompt = async () => {
     if (!newPromptName.trim()) return;
     try {
@@ -381,17 +408,70 @@ export function PromptsPage() {
     return promptContent;
   }, [promptMessages, promptContent]);
 
-  const handleDeletePrompt = async () => {
-    if (!selectedPrompt) return;
+  const requestDeletePrompt = (promptId: string) => {
+    const listItem = prompts.find((p) => p.id === promptId);
+    const name = listItem?.name || (selectedPrompt?.id === promptId ? selectedPrompt.name : 'Prompt');
+    setDeleteConfirmTarget({ id: promptId, name });
+    setShowDeleteConfirm(true);
+  };
+
+  const handleQuickCopyPrompt = async (promptId: string) => {
     try {
-      await promptsApi.delete(selectedPrompt.id);
-      const remaining = prompts.filter((p) => p.id !== selectedPrompt.id);
+      setCopyingPromptId(promptId);
+      const fullPrompt = await promptsApi.getById(promptId);
+
+      const copied = await promptsApi.create({
+        name: `${fullPrompt.name} (${tEval('copy')})`,
+        description: fullPrompt.description || '',
+        content: fullPrompt.content || '',
+        variables: fullPrompt.variables || [],
+        messages: fullPrompt.messages || [],
+        config: toApiConfig(toFrontendConfig(fullPrompt.config)),
+        defaultModelId: fullPrompt.defaultModelId || undefined,
+      });
+
+      setPrompts((prev) => [copied as Prompt, ...prev]);
+      setSelectedPrompt(copied as Prompt);
+      invalidatePromptsCache(copied);
+      showToast('success', tCommon('copied'));
+    } catch (e) {
+      showToast('error', t('copyFailed') + ': ' + (e instanceof Error ? e.message : 'Unknown error'));
+    } finally {
+      setCopyingPromptId(null);
+    }
+  };
+
+  const deletePromptById = async (promptId: string): Promise<boolean> => {
+    try {
+      setDeletingPromptId(promptId);
+      await promptsApi.delete(promptId);
+      invalidatePromptsCache();
+
+      const remaining = prompts.filter((p) => p.id !== promptId);
       setPrompts(remaining);
-      setSelectedPrompt(remaining[0] || null);
+
       showToast('success', t('promptDeleted'));
+
+      if (selectedPrompt?.id === promptId) {
+        if (remaining.length > 0) {
+          await handleSelectPrompt(remaining[0].id);
+        } else {
+          setSelectedPrompt(null);
+        }
+      }
+
+      return true;
     } catch (e) {
       showToast('error', t('deleteFailed') + ': ' + (e instanceof Error ? e.message : 'Unknown error'));
+      return false;
+    } finally {
+      setDeletingPromptId(null);
     }
+  };
+
+  const handleDeletePrompt = () => {
+    if (!selectedPrompt) return;
+    requestDeletePrompt(selectedPrompt.id);
   };
 
   const handleRestoreVersion = async (version: PromptVersion) => {
@@ -932,6 +1012,7 @@ export function PromptsPage() {
         <div className="flex-1 overflow-y-auto p-2 space-y-1">
           {filteredPrompts.map((prompt, index) => {
             const modelName = getModelName(prompt.defaultModelId);
+            const isActive = selectedPrompt?.id === prompt.id || loadingPromptId === prompt.id;
             return (
               <div
                 key={prompt.id}
@@ -939,15 +1020,19 @@ export function PromptsPage() {
                 onDragStart={() => handleDragStart(index)}
                 onDragOver={(e) => handleDragOver(e, index)}
                 onDragEnd={handleDragEnd}
-                onClick={() => setSelectedPrompt(prompt)}
-                className={`w-full flex items-start gap-2 p-3 rounded-lg text-left transition-colors cursor-pointer ${
-                  selectedPrompt?.id === prompt.id
+                onClick={() => handleSelectPrompt(prompt.id)}
+                className={`group w-full flex items-start gap-2 p-3 rounded-lg text-left transition-colors cursor-pointer ${
+                  isActive
                     ? 'bg-slate-800 light:bg-cyan-50 border border-slate-600 light:border-cyan-200'
                     : 'hover:bg-slate-800/50 light:hover:bg-slate-100 border border-transparent'
                 } ${draggedIndex === index ? 'opacity-50' : ''}`}
               >
                 <GripVertical className="w-4 h-4 text-slate-600 light:text-slate-400 mt-0.5 flex-shrink-0 cursor-grab active:cursor-grabbing" />
-                <FileText className="w-5 h-5 text-slate-500 light:text-slate-400 mt-0.5 flex-shrink-0" />
+                {loadingPromptId === prompt.id ? (
+                  <Loader2 className="w-5 h-5 text-slate-500 light:text-slate-400 mt-0.5 flex-shrink-0 animate-spin" />
+                ) : (
+                  <FileText className="w-5 h-5 text-slate-500 light:text-slate-400 mt-0.5 flex-shrink-0" />
+                )}
                 <div className="flex-1 min-w-0">
                   <p className="text-sm font-medium text-slate-200 light:text-slate-800 truncate">
                     {prompt.name}
@@ -966,6 +1051,49 @@ export function PromptsPage() {
                       <span className="text-xs text-cyan-400 light:text-cyan-600 truncate">{modelName}</span>
                     </div>
                   )}
+                </div>
+
+                <div
+                  className={`flex items-center gap-1 mt-0.5 transition-opacity ${
+                    isActive ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100'
+                  }`}
+                >
+                  <button
+                    type="button"
+                    draggable={false}
+                    onMouseDown={(e) => e.stopPropagation()}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleQuickCopyPrompt(prompt.id);
+                    }}
+                    disabled={copyingPromptId === prompt.id || deletingPromptId === prompt.id}
+                    className="p-1.5 rounded hover:bg-slate-700 light:hover:bg-slate-200 text-slate-400 light:text-slate-500 hover:text-slate-200 light:hover:text-slate-700 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                    title={tCommon('copy')}
+                  >
+                    {copyingPromptId === prompt.id ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <Copy className="w-4 h-4" />
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    draggable={false}
+                    onMouseDown={(e) => e.stopPropagation()}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      requestDeletePrompt(prompt.id);
+                    }}
+                    disabled={deletingPromptId === prompt.id || copyingPromptId === prompt.id}
+                    className="p-1.5 rounded hover:bg-slate-700 light:hover:bg-slate-200 text-rose-400 light:text-rose-500 hover:text-rose-300 light:hover:text-rose-600 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                    title={tCommon('delete')}
+                  >
+                    {deletingPromptId === prompt.id ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <Trash2 className="w-4 h-4" />
+                    )}
+                  </button>
                 </div>
               </div>
             );
@@ -1043,8 +1171,12 @@ export function PromptsPage() {
                   <Save className="w-4 h-4" />
                   <span>{t('submitNewVersion')}</span>
                 </Button>
-                <Button variant="ghost" size="sm" onClick={handleDeletePrompt}>
-                  <Trash2 className="w-4 h-4 text-red-400" />
+                <Button variant="ghost" size="sm" onClick={handleDeletePrompt} disabled={deletingPromptId === selectedPrompt.id}>
+                  {deletingPromptId === selectedPrompt.id ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <Trash2 className="w-4 h-4 text-red-400" />
+                  )}
                 </Button>
               </div>
             </div>
@@ -1256,6 +1388,51 @@ export function PromptsPage() {
           </div>
         )}
       </div>
+
+      {/* Delete confirmation modal */}
+      <Modal
+        isOpen={showDeleteConfirm}
+        onClose={() => {
+          setShowDeleteConfirm(false);
+          setDeleteConfirmTarget(null);
+        }}
+        title={t('confirmDelete')}
+        size="sm"
+      >
+        <div className="space-y-4">
+          <p className="text-sm text-slate-300 light:text-slate-700">
+            {t('confirmDeletePrompt', { name: deleteConfirmTarget?.name || '' })}
+          </p>
+          <p className="text-sm text-slate-500 light:text-slate-600">{t('deleteCannotUndo')}</p>
+          <div className="flex justify-end gap-3 pt-2">
+            <Button
+              variant="secondary"
+              onClick={() => {
+                setShowDeleteConfirm(false);
+                setDeleteConfirmTarget(null);
+              }}
+            >
+              {tCommon('cancel')}
+            </Button>
+            <Button
+              variant="danger"
+              loading={!!deleteConfirmTarget && deletingPromptId === deleteConfirmTarget.id}
+              disabled={!deleteConfirmTarget}
+              onClick={async () => {
+                if (!deleteConfirmTarget) return;
+                const ok = await deletePromptById(deleteConfirmTarget.id);
+                if (ok) {
+                  setShowDeleteConfirm(false);
+                  setDeleteConfirmTarget(null);
+                }
+              }}
+            >
+              <Trash2 className="w-4 h-4" />
+              {tCommon('delete')}
+            </Button>
+          </div>
+        </div>
+      </Modal>
 
       {/* New Prompt Modal */}
       <Modal isOpen={showNewPrompt} onClose={() => setShowNewPrompt(false)} title={t("newPrompt")}>
