@@ -17,9 +17,10 @@ import {
   Globe,
 } from 'lucide-react';
 import { Button, Input, Modal, Badge, Select, useToast, ModelSelector } from '../components/ui';
+import { PromptCascader } from '../components/Common/PromptCascader';
 import { TestCaseList, CriteriaEditor, EvaluationResultsView, RunHistory } from '../components/Evaluation';
 import { ParameterPanel } from '../components/Prompt/ParameterPanel';
-import { evaluationsApi, runsApi, promptsApi, providersApi, modelsApi, type EvaluationWithRelations } from '../api';
+import { evaluationsApi, runsApi, promptsApi, promptGroupsApi, providersApi, modelsApi, type EvaluationWithRelations } from '../api';
 import { chatApi, type ContentPart } from '../api/chat';
 import type { FileAttachment } from '../lib/ai-service';
 import { getFileUploadCapabilities } from '../lib/model-capabilities';
@@ -39,6 +40,7 @@ import type {
   PromptConfig,
   ModelParameters,
   EvaluationConfig,
+  PromptGroup,
 } from '../types';
 
 const statusConfig: Record<EvaluationStatus, { labelKey: string; variant: 'info' | 'warning' | 'success' | 'error' }> = {
@@ -68,6 +70,7 @@ const evaluationDraftDirty = new Set<string>();
 interface ListCache {
   evaluations: EvaluationWithRelations[];
   prompts: Prompt[];
+  promptGroups: PromptGroup[];
   models: Model[];
   providers: Provider[];
 }
@@ -81,6 +84,7 @@ export function EvaluationPage() {
   const { t: tCommon } = useTranslation('common');
   const [evaluations, setEvaluations] = useState<EvaluationWithRelations[]>([]);
   const [prompts, setPrompts] = useState<Prompt[]>([]);
+  const [promptGroups, setPromptGroups] = useState<PromptGroup[]>([]);
   const [models, setModels] = useState<Model[]>([]);
   const [providers, setProviders] = useState<Provider[]>([]);
   const [selectedEvaluation, setSelectedEvaluation] = useState<EvaluationWithRelations | null>(null);
@@ -314,6 +318,7 @@ export function EvaluationPage() {
     if (listCache) {
       setEvaluations(listCache.evaluations);
       setPrompts(listCache.prompts);
+      setPromptGroups(listCache.promptGroups);
       setModels(listCache.models);
       setProviders(listCache.providers);
       if (listCache.evaluations.length > 0 && !selectedEvaluation) {
@@ -326,15 +331,17 @@ export function EvaluationPage() {
     setListLoading(true);
     try {
       // 并行加载所有数据
-      const [evalsData, promptsData, modelsData, providersData] = await Promise.all([
+      const [evalsData, promptsData, promptGroupsData, modelsData, providersData] = await Promise.all([
         evaluationsApi.list(),
         promptsApi.list(),
+        promptGroupsApi.list(),
         modelsApi.list(),
         providersApi.list(),
       ]);
 
       const loadedEvaluations = (evalsData || []) as EvaluationWithRelations[];
       const loadedPrompts = (promptsData || []) as Prompt[];
+      const loadedPromptGroups = (promptGroupsData || []) as PromptGroup[];
       const loadedModels = (modelsData || []) as Model[];
       const loadedProviders = (providersData || []).filter(p => p.enabled) as Provider[];
 
@@ -342,12 +349,14 @@ export function EvaluationPage() {
       listCache = {
         evaluations: loadedEvaluations,
         prompts: loadedPrompts,
+        promptGroups: loadedPromptGroups,
         models: loadedModels,
         providers: loadedProviders,
       };
 
       setEvaluations(loadedEvaluations);
       setPrompts(loadedPrompts);
+      setPromptGroups(loadedPromptGroups);
       setModels(loadedModels);
       setProviders(loadedProviders);
 
@@ -1500,13 +1509,13 @@ export function EvaluationPage() {
               <div className="grid grid-cols-6 gap-4">
                 <div className="p-4 bg-slate-800/50 light:bg-white border border-slate-700 light:border-slate-200 rounded-lg light:shadow-sm">
                   <p className="text-xs text-slate-500 light:text-slate-600 mb-2">{t('linkedPrompt')}</p>
-                  <Select
-                    value={selectedEvaluation.promptId || ''}
-                    onChange={(e) => handlePromptChange(e.target.value || null)}
-                    options={[
-                      { value: '', label: t('noLinkedPrompt') },
-                      ...prompts.map((p) => ({ value: p.id, label: `${p.name} (v${p.currentVersion})` })),
-                    ]}
+                  <PromptCascader
+                    value={selectedEvaluation.promptId || null}
+                    onChange={(promptId) => void handlePromptChange(promptId)}
+                    prompts={prompts}
+                    groups={promptGroups}
+                    allowClear
+                    clearLabel={t('noLinkedPrompt')}
                   />
                   {selectedPrompt && (
                     <p className="text-xs text-cyan-400 light:text-cyan-600 mt-2">
@@ -1605,6 +1614,7 @@ export function EvaluationPage() {
                         options={[
                           { value: '', label: t('ocrProviderFollow') },
                           { value: 'paddle', label: 'PaddleOCR' },
+                          { value: 'paddle_vl', label: t('ocrProviderPaddleVl') },
                           { value: 'datalab', label: t('ocrProviderDatalab') },
                         ]}
                       />
@@ -1812,14 +1822,14 @@ export function EvaluationPage() {
             placeholder={t('evaluationNamePlaceholder')}
             autoFocus
           />
-          <Select
+          <PromptCascader
             label={t('linkedPromptOptional')}
-            value={newEvalPrompt}
-            onChange={(e) => setNewEvalPrompt(e.target.value)}
-            options={[
-              { value: '', label: t('noLinkedPrompt') },
-              ...prompts.map((p) => ({ value: p.id, label: p.name })),
-            ]}
+            value={newEvalPrompt || null}
+            onChange={(promptId) => setNewEvalPrompt(promptId || '')}
+            prompts={prompts}
+            groups={promptGroups}
+            allowClear
+            clearLabel={t('noLinkedPrompt')}
           />
           <div>
             <label className="block text-sm font-medium text-slate-300 light:text-slate-700 mb-1.5">

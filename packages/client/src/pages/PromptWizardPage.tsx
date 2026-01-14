@@ -922,6 +922,7 @@ export function PromptWizardPage({ onNavigate }: PromptWizardPageProps) {
                             options={[
                               { value: '', label: tEval('ocrProviderFollow') },
                               { value: 'paddle', label: 'PaddleOCR' },
+                              { value: 'paddle_vl', label: tEval('ocrProviderPaddleVl') },
                               { value: 'datalab', label: tEval('ocrProviderDatalab') },
                             ]}
                           />

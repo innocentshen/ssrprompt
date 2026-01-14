@@ -75,9 +75,9 @@ const DebugRunItem = memo(function DebugRunItem({
     >
       <div className="flex items-center gap-2 mb-1">
         {run.status === 'success' ? (
-          <CheckCircle className="w-3.5 h-3.5 text-green-400 light:text-green-600" />
+          <CheckCircle className="w-3.5 h-3.5 text-green-400 light:text-green-600 flex-shrink-0" />
         ) : (
-          <XCircle className="w-3.5 h-3.5 text-red-400 light:text-red-600" />
+          <XCircle className="w-3.5 h-3.5 text-red-400 light:text-red-600 flex-shrink-0" />
         )}
         <span className="text-xs text-slate-400 light:text-slate-500 flex items-center gap-1">
           <Clock className="w-3 h-3" />
@@ -87,44 +87,43 @@ const DebugRunItem = memo(function DebugRunItem({
           {formatLatency(run.latencyMs)}
         </Badge>
         <div className="flex-1" />
-        {onViewDetails && (
-          <Button
-            variant="ghost"
-            size="sm"
+        <div className="flex items-center -mr-1">
+          {onViewDetails && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onViewDetails();
+              }}
+              className="p-0.5 text-slate-400 hover:text-slate-200 light:hover:text-slate-700 transition-colors"
+              title={t('viewDetails')}
+            >
+              <Eye className="w-3.5 h-3.5" />
+            </button>
+          )}
+          <button
+            type="button"
             onClick={(e) => {
               e.stopPropagation();
-              onViewDetails();
+              onReplay();
             }}
-            className="p-1"
-            title={t('viewDetails')}
+            className="p-0.5 text-slate-400 hover:text-slate-200 light:hover:text-slate-700 transition-colors"
+            title={t('replayInput')}
           >
-            <Eye className="w-3 h-3" />
-          </Button>
-        )}
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={(e) => {
-            e.stopPropagation();
-            onReplay();
-          }}
-          className="p-1"
-          title={t('replayInput')}
-        >
-          <RotateCcw className="w-3 h-3" />
-        </Button>
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={(e) => {
-            e.stopPropagation();
-            onDelete();
-          }}
-          className="p-1 text-red-400 hover:text-red-300"
-          title={t('deleteRecord')}
-        >
-          <Trash2 className="w-3 h-3" />
-        </Button>
+            <RotateCcw className="w-3.5 h-3.5" />
+          </button>
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onDelete();
+            }}
+            className="p-0.5 text-slate-400 hover:text-red-400 transition-colors"
+            title={t('deleteRecord')}
+          >
+            <Trash2 className="w-3.5 h-3.5" />
+          </button>
+        </div>
       </div>
 
       {/* Input preview */}
@@ -206,7 +205,7 @@ export const DebugHistory = memo(function DebugHistory({
         )
       }
     >
-      <div className="space-y-2 max-h-[200px] overflow-y-auto">
+      <div className="space-y-2 max-h-[300px] overflow-y-auto scrollbar-auto-hide">
         {runs.length === 0 ? (
           <div className="text-center py-3 text-slate-500 light:text-slate-500 text-sm">
             {t('runPromptToShowHistory')}

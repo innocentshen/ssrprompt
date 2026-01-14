@@ -49,6 +49,7 @@ export const CreatePromptSchema = z.object({
   messages: z.array(PromptMessageSchema).optional().default([]),
   config: PromptConfigSchema.optional().default({}),
   defaultModelId: z.string().uuid().optional(),
+  groupId: z.string().uuid().nullable().optional(),
 });
 
 // Update Prompt Schema
@@ -60,6 +61,7 @@ export const UpdatePromptSchema = z.object({
   messages: z.array(PromptMessageSchema).optional(),
   config: PromptConfigSchema.optional(),
   defaultModelId: z.string().uuid().nullable().optional(),
+  groupId: z.string().uuid().nullable().optional(),
   orderIndex: z.number().int().min(0).optional(),
   isPublic: z.boolean().optional(),
 });
@@ -80,6 +82,20 @@ export const CopyPublicPromptSchema = z.object({
   name: z.string().min(1).optional(),
 });
 
+// ============ Prompt Group Schemas ============
+
+export const CreatePromptGroupSchema = z.object({
+  name: z.string().min(1, 'Name is required'),
+  parentId: z.string().uuid().nullable().optional(),
+  orderIndex: z.number().int().min(0).optional(),
+});
+
+export const UpdatePromptGroupSchema = z.object({
+  name: z.string().min(1).optional(),
+  parentId: z.string().uuid().nullable().optional(),
+  orderIndex: z.number().int().min(0).optional(),
+});
+
 export type PromptVariableInput = z.infer<typeof PromptVariableSchema>;
 export type PromptMessageInput = z.infer<typeof PromptMessageSchema>;
 export type PromptConfigInput = z.infer<typeof PromptConfigSchema>;
@@ -87,3 +103,5 @@ export type CreatePromptInput = z.infer<typeof CreatePromptSchema>;
 export type UpdatePromptInput = z.infer<typeof UpdatePromptSchema>;
 export type CreateVersionInput = z.infer<typeof CreateVersionSchema>;
 export type CopyPublicPromptInput = z.infer<typeof CopyPublicPromptSchema>;
+export type CreatePromptGroupInput = z.infer<typeof CreatePromptGroupSchema>;
+export type UpdatePromptGroupInput = z.infer<typeof UpdatePromptGroupSchema>;

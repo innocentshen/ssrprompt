@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { ocrService } from '../services/ocr.service.js';
 import { UpdateOcrProviderSettingsSchema, UpdateOcrSystemProviderSettingsSchema } from '@ssrprompt/shared';
 
-const OcrProviderSchema = z.enum(['paddle', 'datalab']);
+const OcrProviderSchema = z.enum(['paddle', 'paddle_vl', 'datalab']);
 const OcrCredentialSourceSchema = z.enum(['system', 'custom']);
 
 const OcrTestOverrideSchema = z.object({

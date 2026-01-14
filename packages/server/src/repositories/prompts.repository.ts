@@ -30,6 +30,7 @@ export class PromptsRepository extends TenantRepository<
         description: true,
         currentVersion: true,
         defaultModelId: true,
+        groupId: true,
         orderIndex: true,
         isPublic: true,
         createdAt: true,

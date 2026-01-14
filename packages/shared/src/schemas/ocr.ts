@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-export const OcrProviderSchema = z.enum(['paddle', 'datalab']);
+export const OcrProviderSchema = z.enum(['paddle', 'paddle_vl', 'datalab']);
 export const OcrCredentialSourceSchema = z.enum(['system', 'custom']);
 
 export const UpdateOcrProviderSettingsSchema = z.object({
@@ -20,6 +20,7 @@ const UpdateOcrSystemProviderConfigSchema = z.object({
 
 export const UpdateOcrSystemProviderSettingsSchema = z.object({
   paddle: UpdateOcrSystemProviderConfigSchema.optional(),
+  paddle_vl: UpdateOcrSystemProviderConfigSchema.optional(),
   datalab: UpdateOcrSystemProviderConfigSchema.optional(),
 });
 

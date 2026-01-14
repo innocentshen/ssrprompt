@@ -10,6 +10,11 @@ interface RequestOptions extends RequestInit {
 }
 
 /**
+ * Token refresh callback type
+ */
+type TokenRefresher = () => Promise<boolean>;
+
+/**
  * API Error class
  */
 export class ApiError extends Error {
@@ -30,9 +35,19 @@ export class ApiError extends Error {
  */
 class ApiClient {
   private baseUrl: string;
+  private tokenRefresher: TokenRefresher | null = null;
+  private isRefreshing = false;
+  private refreshPromise: Promise<boolean> | null = null;
 
   constructor(baseUrl: string) {
     this.baseUrl = baseUrl;
+  }
+
+  /**
+   * Register a token refresh callback
+   */
+  setTokenRefresher(refresher: TokenRefresher): void {
+    this.tokenRefresher = refresher;
   }
 
   /**
@@ -105,9 +120,32 @@ class ApiClient {
   }
 
   /**
+   * Try to refresh the token
+   */
+  private async tryRefreshToken(): Promise<boolean> {
+    if (!this.tokenRefresher) {
+      return false;
+    }
+
+    // Prevent multiple concurrent refresh attempts
+    if (this.isRefreshing) {
+      return this.refreshPromise || Promise.resolve(false);
+    }
+
+    this.isRefreshing = true;
+    this.refreshPromise = this.tokenRefresher()
+      .finally(() => {
+        this.isRefreshing = false;
+        this.refreshPromise = null;
+      });
+
+    return this.refreshPromise;
+  }
+
+  /**
    * Handle API response
    */
-  private async handleResponse<T>(response: Response): Promise<T> {
+  private async handleResponse<T>(response: Response, skipRefresh = false): Promise<T> {
     if (response.status === 204) {
       return undefined as T;
     }
@@ -118,28 +156,18 @@ class ApiClient {
       const error = data.error || { code: 'UNKNOWN_ERROR', message: 'Request failed' };
       const requestId = response.headers.get('X-Request-Id') || undefined;
 
-      // Handle token expiration - auto refresh for demo mode
-      if (response.status === 401 && error.code === 'TOKEN_EXPIRED' && this.isDemoMode()) {
-        await this.refreshDemoToken();
-        throw new ApiError(response.status, 'RETRY_NEEDED', 'Token refreshed, please retry');
+      // Handle 401 - try to refresh token (unless skipped)
+      if (response.status === 401 && !skipRefresh) {
+        const refreshed = await this.tryRefreshToken();
+        if (refreshed) {
+          throw new ApiError(response.status, 'RETRY_NEEDED', 'Token refreshed, please retry');
+        }
       }
 
       throw new ApiError(response.status, error.code, error.message, error.details, requestId);
     }
 
     return data.data;
-  }
-
-  /**
-   * Refresh demo token
-   */
-  private async refreshDemoToken(): Promise<void> {
-    const response = await fetch(`${this.baseUrl}/auth/demo-token`);
-    const data = await response.json();
-
-    if (data.data?.token) {
-      this.setToken(data.data.token);
-    }
   }
 
   /**
@@ -163,13 +191,16 @@ class ApiClient {
   private async request<T>(path: string, options: RequestOptions = {}): Promise<T> {
     const { params, ...fetchOptions } = options;
 
+    // Skip token refresh for auth endpoints to prevent infinite loops
+    const skipRefresh = path.startsWith('/auth/');
+
     const response = await fetch(this.buildUrl(path, params), {
       ...fetchOptions,
       headers: this.getHeaders(),
     });
 
     try {
-      return await this.handleResponse<T>(response);
+      return await this.handleResponse<T>(response, skipRefresh);
     } catch (error) {
       // Retry once if token was refreshed
       if (error instanceof ApiError && error.code === 'RETRY_NEEDED') {
@@ -177,7 +208,7 @@ class ApiClient {
           ...fetchOptions,
           headers: this.getHeaders(),
         });
-        return this.handleResponse<T>(retryResponse);
+        return this.handleResponse<T>(retryResponse, true); // Don't refresh on retry
       }
       throw error;
     }

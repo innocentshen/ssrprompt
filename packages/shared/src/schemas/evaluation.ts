@@ -23,7 +23,7 @@ export const EvaluationConfigSchema = z.object({
   model_parameters: ModelParametersSchema.optional(),
   inherited_from_prompt: z.boolean().optional(),
   file_processing: z.enum(['auto', 'vision', 'ocr', 'none']).optional(),
-  ocr_provider: z.enum(['paddle', 'datalab']).optional(),
+  ocr_provider: z.enum(['paddle', 'paddle_vl', 'datalab']).optional(),
 });
 
 // Create Evaluation Schema

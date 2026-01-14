@@ -58,6 +58,7 @@ model Prompt {
   config         Json            @default("{}")
   currentVersion Int             @default(1) @map("current_version")
   defaultModelId String?         @map("default_model_id")
+  groupId        String?         @map("group_id")
   orderIndex     Int             @default(0) @map("order_index")
   createdAt      DateTime        @default(now()) @map("created_at")
   updatedAt      DateTime        @updatedAt @map("updated_at")
@@ -65,12 +66,33 @@ model Prompt {
   evaluations    Evaluation[]
   versions       PromptVersion[]
   defaultModel   Model?          @relation("DefaultModel", fields: [defaultModelId], references: [id])
+  group          PromptGroup?    @relation(fields: [groupId], references: [id], onDelete: SetNull)
   user           User            @relation(fields: [userId], references: [id], onDelete: Cascade)
   traces         Trace[]
 
   @@index([userId])
+  @@index([groupId])
   @@index([orderIndex])
   @@map("prompts")
+}
+
+model PromptGroup {
+  id         String        @id @default(uuid())
+  userId     String        @default("default") @map("user_id")
+  name       String
+  parentId   String?       @map("parent_id")
+  orderIndex Int           @default(0) @map("order_index")
+  createdAt  DateTime      @default(now()) @map("created_at")
+  updatedAt  DateTime      @updatedAt @map("updated_at")
+  user       User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  parent     PromptGroup?  @relation("PromptGroupHierarchy", fields: [parentId], references: [id], onDelete: SetNull)
+  children   PromptGroup[] @relation("PromptGroupHierarchy")
+  prompts    Prompt[]
+
+  @@index([userId])
+  @@index([parentId])
+  @@index([orderIndex])
+  @@map("prompt_groups")
 }
 
 model PromptVersion {
@@ -213,17 +235,55 @@ model User {
   lastLoginAt   DateTime?    @map("last_login_at")
   evaluations   Evaluation[]
   prompts       Prompt[]
+  promptGroups  PromptGroup[]
   providers     Provider[]
   files         StoredFile[]
   ocrSetting    OcrProviderSetting?
   ocrResults    OcrResult[]
   sessions      Session[]
+  oauthAccounts OAuthAccount[]
   traces        Trace[]
   roles         UserRole[]
 
   @@index([email])
   @@index([status])
   @@map("users")
+}
+
+model EmailVerification {
+  id        String                @id @default(uuid())
+  email     String
+  codeHash  String                @map("code_hash")
+  type      EmailVerificationType
+  expiresAt DateTime              @map("expires_at")
+  verified  Boolean               @default(false)
+  attempts  Int                   @default(0)
+  createdAt DateTime              @default(now()) @map("created_at")
+
+  @@index([email, type])
+  @@index([expiresAt])
+  @@map("email_verifications")
+}
+
+model OAuthAccount {
+  id                  String        @id @default(uuid())
+  userId              String        @map("user_id")
+  provider            OAuthProvider
+  providerUserId      String        @map("provider_user_id")
+  providerEmail       String?       @map("provider_email")
+  name                String?
+  avatar              String?
+  accessTokenEncrypted String?       @map("access_token_encrypted")
+  refreshTokenEncrypted String?      @map("refresh_token_encrypted")
+  expiresAt           DateTime?      @map("expires_at")
+  createdAt           DateTime       @default(now()) @map("created_at")
+  updatedAt           DateTime       @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerUserId])
+  @@index([userId])
+  @@map("oauth_accounts")
 }
 
 model Role {
@@ -408,8 +468,19 @@ enum UserStatus {
   suspended
 }
 
+enum EmailVerificationType {
+  register
+  reset_password
+}
+
+enum OAuthProvider {
+  google
+  linuxdo
+}
+
 enum OcrProvider {
   paddle
+  paddle_vl
   datalab
 }
 

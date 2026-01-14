@@ -157,6 +157,7 @@
   "fileProcessingOcr": "OCR（画像/PDF をテキスト化）",
   "fileProcessingNone": "無視（添付を送信しない）",
   "ocrProviderFollow": "OCR：設定に従う",
+  "ocrProviderPaddleVl": "PaddleOCR-VL",
   "ocrProviderDatalab": "Datalab（実験）",
   "status": "ステータス",
   "testCasesCount": "テストケース ({{count}})",

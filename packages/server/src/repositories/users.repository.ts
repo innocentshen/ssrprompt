@@ -68,12 +68,16 @@ export class UsersRepository {
     email: string;
     passwordHash?: string;
     name?: string;
+    avatar?: string;
+    emailVerified?: boolean;
   }): Promise<User> {
     return prisma.user.create({
       data: {
         email: data.email,
         passwordHash: data.passwordHash,
         name: data.name,
+        avatar: data.avatar,
+        emailVerified: data.emailVerified,
       },
     });
   }
@@ -86,6 +90,8 @@ export class UsersRepository {
       email: string;
       passwordHash?: string;
       name?: string;
+      avatar?: string;
+      emailVerified?: boolean;
     },
     roleName: string = 'user'
   ): Promise<UserWithRoles> {
@@ -103,6 +109,8 @@ export class UsersRepository {
         email: data.email,
         passwordHash: data.passwordHash,
         name: data.name,
+        avatar: data.avatar,
+        emailVerified: data.emailVerified,
         roles: {
           create: {
             roleId: role.id,

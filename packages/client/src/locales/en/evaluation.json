@@ -164,6 +164,7 @@
   "fileProcessingOcr": "OCR (extract text from images/PDF)",
   "fileProcessingNone": "Ignore (do not send files)",
   "ocrProviderFollow": "OCR provider: follow Settings",
+  "ocrProviderPaddleVl": "PaddleOCR-VL",
   "ocrProviderDatalab": "Datalab (experimental)",
   "status": "Status",
   "testCasesCount": "Test Cases ({{count}})",

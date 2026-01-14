@@ -2,6 +2,7 @@
 export { apiClient, ApiError } from './client';
 export { providersApi, modelsApi } from './providers';
 export { promptsApi } from './prompts';
+export { promptGroupsApi } from './prompt-groups';
 export { tracesApi } from './traces';
 export { evaluationsApi, testCasesApi, criteriaApi, runsApi } from './evaluations';
 export { filesApi } from './files';

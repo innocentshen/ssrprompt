@@ -8,7 +8,9 @@ import { ocrApi } from '../../api/ocr';
 import type { OcrProvider, OcrCredentialSource, OcrTestResult, OcrSystemProviderSettings } from '../../types';
 
 function providerLabel(provider: OcrProvider, t: (k: string) => string): string {
-  return provider === 'paddle' ? 'PaddleOCR' : t('datalabExperimental');
+  if (provider === 'paddle') return 'PaddleOCR';
+  if (provider === 'paddle_vl') return 'PaddleOCR-VL';
+  return t('datalabExperimental');
 }
 
 function credentialLabel(source: OcrCredentialSource, t: (k: string) => string): string {
@@ -36,9 +38,12 @@ export function OcrSettings() {
   const [systemSaving, setSystemSaving] = useState(false);
   const [systemPaddleBaseUrl, setSystemPaddleBaseUrl] = useState('');
   const [systemPaddleApiKey, setSystemPaddleApiKey] = useState('');
+  const [systemPaddleVlBaseUrl, setSystemPaddleVlBaseUrl] = useState('');
+  const [systemPaddleVlApiKey, setSystemPaddleVlApiKey] = useState('');
   const [systemDatalabBaseUrl, setSystemDatalabBaseUrl] = useState('');
   const [systemDatalabApiKey, setSystemDatalabApiKey] = useState('');
   const [clearSystemPaddleKey, setClearSystemPaddleKey] = useState(false);
+  const [clearSystemPaddleVlKey, setClearSystemPaddleVlKey] = useState(false);
   const [clearSystemDatalabKey, setClearSystemDatalabKey] = useState(false);
 
   useEffect(() => {
@@ -62,6 +67,7 @@ export function OcrSettings() {
       .then((s) => {
         setSystemSettings(s);
         setSystemPaddleBaseUrl(s.paddle.baseUrl || '');
+        setSystemPaddleVlBaseUrl(s.paddle_vl.baseUrl || '');
         setSystemDatalabBaseUrl(s.datalab.baseUrl || '');
       })
       .catch((e) => {
@@ -115,6 +121,10 @@ export function OcrSettings() {
           baseUrl: systemPaddleBaseUrl || null,
           ...(clearSystemPaddleKey ? { apiKey: null } : (systemPaddleApiKey.trim() ? { apiKey: systemPaddleApiKey.trim() } : {})),
         },
+        paddle_vl: {
+          baseUrl: systemPaddleVlBaseUrl || null,
+          ...(clearSystemPaddleVlKey ? { apiKey: null } : (systemPaddleVlApiKey.trim() ? { apiKey: systemPaddleVlApiKey.trim() } : {})),
+        },
         datalab: {
           baseUrl: systemDatalabBaseUrl || null,
           ...(clearSystemDatalabKey ? { apiKey: null } : (systemDatalabApiKey.trim() ? { apiKey: systemDatalabApiKey.trim() } : {})),
@@ -124,10 +134,13 @@ export function OcrSettings() {
       const next = await ocrApi.updateSystemSettings(payload);
       setSystemSettings(next);
       setSystemPaddleBaseUrl(next.paddle.baseUrl || '');
+      setSystemPaddleVlBaseUrl(next.paddle_vl.baseUrl || '');
       setSystemDatalabBaseUrl(next.datalab.baseUrl || '');
       setSystemPaddleApiKey('');
+      setSystemPaddleVlApiKey('');
       setSystemDatalabApiKey('');
       setClearSystemPaddleKey(false);
+      setClearSystemPaddleVlKey(false);
       setClearSystemDatalabKey(false);
 
       // Refresh user-visible systemDefaults / effective config
@@ -199,6 +212,7 @@ export function OcrSettings() {
               className="w-full px-3 py-2 bg-slate-900 light:bg-white border border-slate-700 light:border-slate-300 rounded-lg text-sm text-slate-200 light:text-slate-800 focus:outline-none focus:border-cyan-500"
             >
               <option value="paddle">PaddleOCR</option>
+              <option value="paddle_vl">PaddleOCR-VL</option>
               <option value="datalab">{t('datalabExperimental')}</option>
             </select>
           </div>
@@ -298,6 +312,36 @@ export function OcrSettings() {
                   {tCommon('clear')}
                 </Button>
                 {clearSystemPaddleKey && (
+                  <span className="text-xs text-slate-500 light:text-slate-600">{t('apiKeyWillBeCleared')}</span>
+                )}
+              </div>
+            </div>
+
+            <Input
+              label={`PaddleOCR-VL ${t('baseUrl')}`}
+              value={systemPaddleVlBaseUrl}
+              onChange={(e) => setSystemPaddleVlBaseUrl(e.target.value)}
+              placeholder={t('baseUrlPlaceholder')}
+            />
+            <div className="space-y-2">
+              <Input
+                label={`PaddleOCR-VL ${t('apiKey')}`}
+                value={systemPaddleVlApiKey}
+                onChange={(e) => setSystemPaddleVlApiKey(e.target.value)}
+                placeholder={systemSettings?.paddle_vl?.hasApiKey && systemSettings.paddle_vl.apiKeyLast4 ? t('apiKeyLast4', { last4: systemSettings.paddle_vl.apiKeyLast4 }) : t('apiKeyPlaceholder')}
+                type="password"
+              />
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="secondary"
+                  onClick={() => {
+                    setClearSystemPaddleVlKey(true);
+                    setSystemPaddleVlApiKey('');
+                  }}
+                >
+                  {tCommon('clear')}
+                </Button>
+                {clearSystemPaddleVlKey && (
                   <span className="text-xs text-slate-500 light:text-slate-600">{t('apiKeyWillBeCleared')}</span>
                 )}
               </div>

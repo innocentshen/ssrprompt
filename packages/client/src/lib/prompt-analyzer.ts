@@ -67,9 +67,44 @@ export async function analyzePrompt(
       jsonContent = jsonMatch[1].trim();
     }
 
-    const parsed = JSON.parse(jsonContent);
+    // Try to parse JSON, with fallback for common issues
+    let parsed: Record<string, unknown>;
+    try {
+      parsed = JSON.parse(jsonContent);
+    } catch {
+      // Try to extract score and other fields using regex as fallback
+      const scoreMatch = jsonContent.match(/"score"\s*:\s*(\d+)/);
+      const summaryMatch = jsonContent.match(/"summary"\s*:\s*"([^"]+)"/);
 
-    const suggestions: OptimizationSuggestion[] = (parsed.suggestions || []).map(
+      if (scoreMatch) {
+        // Extract what we can from malformed JSON
+        const score = parseInt(scoreMatch[1], 10);
+        const summary = summaryMatch ? summaryMatch[1] : '分析完成';
+
+        // Try to extract strengths array
+        const strengthsMatch = jsonContent.match(/"strengths"\s*:\s*\[([\s\S]*?)\]/);
+        let strengths: string[] = [];
+        if (strengthsMatch) {
+          const strengthsContent = strengthsMatch[1];
+          const strengthItems = strengthsContent.match(/"([^"]+)"/g);
+          if (strengthItems) {
+            strengths = strengthItems.map(s => s.replace(/^"|"$/g, ''));
+          }
+        }
+
+        return {
+          score: Math.min(100, Math.max(0, score)),
+          summary,
+          strengths,
+          suggestions: [],
+        };
+      }
+
+      // Re-throw if we couldn't extract anything useful
+      throw new Error('Cannot parse JSON');
+    }
+
+    const suggestions: OptimizationSuggestion[] = (parsed.suggestions as Array<Omit<OptimizationSuggestion, 'id'>> || []).map(
       (s: Omit<OptimizationSuggestion, 'id'>, i: number) => ({
         ...s,
         id: `suggestion_${Date.now()}_${i}`,
@@ -79,9 +114,9 @@ export async function analyzePrompt(
     );
 
     return {
-      score: Math.min(100, Math.max(0, parsed.score || 0)),
-      summary: parsed.summary || '分析完成',
-      strengths: parsed.strengths || [],
+      score: Math.min(100, Math.max(0, (parsed.score as number) || 0)),
+      summary: (parsed.summary as string) || '分析完成',
+      strengths: (parsed.strengths as string[]) || [],
       suggestions,
     };
   } catch {

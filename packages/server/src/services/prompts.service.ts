@@ -30,6 +30,11 @@ export class PromptsService {
    * Create a new prompt
    */
   async create(userId: string, data: CreatePromptInput): Promise<Prompt> {
+    const groupId = data.groupId ?? null;
+    if (groupId) {
+      await this.assertPromptGroupExists(userId, groupId);
+    }
+
     return promptsRepository.create(userId, {
       name: data.name,
       description: data.description,
@@ -38,6 +43,7 @@ export class PromptsService {
       messages: data.messages ?? [],
       config: (data.config ?? {}) as Prisma.InputJsonValue,
       defaultModel: data.defaultModelId ? { connect: { id: data.defaultModelId } } : undefined,
+      ...(groupId ? { group: { connect: { id: groupId } } } : {}),
     });
   }
 
@@ -50,6 +56,17 @@ export class PromptsService {
       ...data,
       config: data.config ? (data.config as Prisma.InputJsonValue) : undefined,
     };
+
+    const groupId = data.groupId;
+    if (typeof groupId !== 'undefined') {
+      if (groupId) {
+        await this.assertPromptGroupExists(userId, groupId);
+        (updateData as unknown as Prisma.PromptUpdateInput).group = { connect: { id: groupId } };
+      } else {
+        (updateData as unknown as Prisma.PromptUpdateInput).group = { disconnect: true };
+      }
+      delete (updateData as Record<string, unknown>).groupId;
+    }
 
     // If setting prompt to private, also set related evaluations to private
     if (data.isPublic === false) {
@@ -100,6 +117,17 @@ export class PromptsService {
     }
 
     return updatedPrompt;
+  }
+
+  private async assertPromptGroupExists(userId: string, groupId: string) {
+    const group = await prisma.promptGroup.findFirst({
+      where: { id: groupId, userId },
+      select: { id: true },
+    });
+
+    if (!group) {
+      throw new NotFoundError('PromptGroup', groupId);
+    }
   }
 
   /**

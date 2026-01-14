@@ -36,7 +36,8 @@ export class FilesController {
       }
 
       const record = await filesService.upload(userId, {
-        originalName: file.originalname,
+        // multer uses latin1 for originalname, decode as UTF-8
+        originalName: Buffer.from(file.originalname, 'latin1').toString('utf8'),
         mimeType: file.mimetype,
         size: file.size,
         buffer: file.buffer,
@@ -91,7 +92,13 @@ export class FilesController {
 
       res.setHeader('Content-Type', meta.mimeType);
       res.setHeader('Accept-Ranges', 'bytes');
-      res.setHeader('Content-Disposition', `inline; filename="${meta.originalName.replace(/"/g, '')}"`);
+      // Use RFC 5987 encoding for non-ASCII filenames
+      const safeFilename = meta.originalName.replace(/[^\x20-\x7E]/g, '');
+      const encodedFilename = encodeURIComponent(meta.originalName);
+      res.setHeader(
+        'Content-Disposition',
+        `inline; filename="${safeFilename}"; filename*=UTF-8''${encodedFilename}`
+      );
 
       if (range && contentRange) {
         res.status(206);

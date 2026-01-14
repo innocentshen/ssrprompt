@@ -374,6 +374,9 @@ export function StructuredOutputEditor({
   };
 
   const isEnabled = schema?.enabled ?? false;
+  const hasContent = (schema?.fields?.length ?? 0) > 0;
+  // 禁用展开：未启用且无内容
+  const collapsibleDisabled = !isEnabled && !hasContent;
 
   return (
     <>
@@ -381,6 +384,7 @@ export function StructuredOutputEditor({
         title={t('structuredOutput')}
         icon={<FileJson className="w-4 h-4 text-green-400" />}
         defaultOpen={false}
+        disabled={collapsibleDisabled}
         action={
           <button
             onClick={(e) => {
@@ -400,35 +404,35 @@ export function StructuredOutputEditor({
           </button>
         }
       >
-        {isEnabled && schema && (
-          <div className="space-y-3">
-            {/* Mode switcher */}
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => setMode('visual')}
-                disabled={disabled}
-                className={`flex items-center gap-1 px-2 py-1 text-xs rounded transition-colors ${
-                  mode === 'visual'
-                    ? 'bg-cyan-500 text-white'
-                    : 'bg-slate-700 text-slate-300 hover:bg-slate-600'
-                } ${disabled ? 'opacity-50 cursor-not-allowed' : ''}`}
-              >
-                <Eye className="w-3 h-3" />
-                {t('visual')}
-              </button>
-              <button
-                onClick={() => setMode('json')}
-                disabled={disabled}
-                className={`flex items-center gap-1 px-2 py-1 text-xs rounded transition-colors ${
-                  mode === 'json'
-                    ? 'bg-cyan-500 text-white'
-                    : 'bg-slate-700 text-slate-300 hover:bg-slate-600'
-                } ${disabled ? 'opacity-50 cursor-not-allowed' : ''}`}
-              >
-                <Code className="w-3 h-3" />
-                {t('json')}
-              </button>
-              <div className="flex-1" />
+        <div className="space-y-3">
+          {/* Mode switcher */}
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setMode('visual')}
+              disabled={disabled || !isEnabled}
+              className={`flex items-center gap-1 px-2 py-1 text-xs rounded transition-colors ${
+                mode === 'visual'
+                  ? 'bg-cyan-500 text-white'
+                  : 'bg-slate-700 text-slate-300 hover:bg-slate-600'
+              } ${(disabled || !isEnabled) ? 'opacity-50 cursor-not-allowed' : ''}`}
+            >
+              <Eye className="w-3 h-3" />
+              {t('visual')}
+            </button>
+            <button
+              onClick={() => setMode('json')}
+              disabled={disabled || !isEnabled}
+              className={`flex items-center gap-1 px-2 py-1 text-xs rounded transition-colors ${
+                mode === 'json'
+                  ? 'bg-cyan-500 text-white'
+                  : 'bg-slate-700 text-slate-300 hover:bg-slate-600'
+              } ${(disabled || !isEnabled) ? 'opacity-50 cursor-not-allowed' : ''}`}
+            >
+              <Code className="w-3 h-3" />
+              {t('json')}
+            </button>
+            <div className="flex-1" />
+            {isEnabled && (
               <Button
                 variant="ghost"
                 size="sm"
@@ -439,91 +443,95 @@ export function StructuredOutputEditor({
                 <Upload className="w-3 h-3 mr-1" />
                 {t('import')}
               </Button>
-            </div>
+            )}
+          </div>
 
-            {/* Schema name */}
-            <div className="flex items-center gap-2">
-              <Input
-                value={schema.name}
-                onChange={(e) => onChange({ ...schema, name: e.target.value })}
-                placeholder="response"
-                disabled={disabled}
-                className="flex-1 text-sm"
+          {/* Schema name */}
+          <div className="flex items-center gap-2">
+            <Input
+              value={schema?.name || 'response'}
+              onChange={(e) => schema && onChange({ ...schema, name: e.target.value })}
+              placeholder="response"
+              disabled={disabled || !isEnabled}
+              className="flex-1 text-sm"
+            />
+            <label className="flex items-center gap-1.5 text-xs text-slate-400 cursor-pointer whitespace-nowrap">
+              <input
+                type="checkbox"
+                checked={schema?.strict ?? false}
+                onChange={(e) => schema && onChange({ ...schema, strict: e.target.checked })}
+                disabled={disabled || !isEnabled}
+                className="w-3.5 h-3.5 rounded border-slate-600 bg-slate-700 text-cyan-500 focus:ring-cyan-500"
               />
-              <label className="flex items-center gap-1.5 text-xs text-slate-400 cursor-pointer whitespace-nowrap">
-                <input
-                  type="checkbox"
-                  checked={schema.strict}
-                  onChange={(e) => onChange({ ...schema, strict: e.target.checked })}
-                  disabled={disabled}
-                  className="w-3.5 h-3.5 rounded border-slate-600 bg-slate-700 text-cyan-500 focus:ring-cyan-500"
-                />
-                {t('strict')}
-              </label>
-            </div>
+              {t('strict')}
+            </label>
+          </div>
 
-            {/* Visual Editor */}
-            {mode === 'visual' && (
-              <div className="space-y-2">
-                {schema.fields.length === 0 ? (
-                  <div className="text-center py-3 border border-dashed border-slate-700 rounded-lg">
-                    <p className="text-xs text-slate-500 mb-2">{t('noOutputStructure')}</p>
+          {/* Visual Editor */}
+          {mode === 'visual' && schema && (
+            <div className="space-y-2">
+              {schema.fields.length === 0 ? (
+                <div className="text-center py-3 border border-dashed border-slate-700 rounded-lg">
+                  <p className="text-xs text-slate-500 mb-2">{t('noOutputStructure')}</p>
+                  {isEnabled && (
                     <div className="flex items-center justify-center gap-2">
                       <Button variant="ghost" size="sm" onClick={handleAddField} disabled={disabled} className="text-xs">
                         <Plus className="w-3 h-3 mr-1" />
                         {t('addField')}
                       </Button>
                     </div>
-                  </div>
-                ) : (
-                  <>
-                    {schema.fields.map((field, index) => (
-                      <SchemaFieldEditor
-                        key={index}
-                        field={field}
-                        onChange={(f) => handleUpdateField(index, f)}
-                        onDelete={() => handleDeleteField(index)}
-                        disabled={disabled}
-                        t={t}
-                      />
-                    ))}
+                  )}
+                </div>
+              ) : (
+                <>
+                  {schema.fields.map((field, index) => (
+                    <SchemaFieldEditor
+                      key={index}
+                      field={field}
+                      onChange={(f) => handleUpdateField(index, f)}
+                      onDelete={() => handleDeleteField(index)}
+                      disabled={disabled || !isEnabled}
+                      t={t}
+                    />
+                  ))}
+                  {isEnabled && (
                     <Button variant="ghost" size="sm" onClick={handleAddField} disabled={disabled} className="w-full text-xs">
                       <Plus className="w-3 h-3 mr-1" />
                       {t('addField')}
                     </Button>
-                  </>
-                )}
-              </div>
-            )}
+                  )}
+                </>
+              )}
+            </div>
+          )}
 
-            {/* JSON Editor */}
-            {mode === 'json' && (
-              <div className="space-y-2">
-                <textarea
-                  value={jsonText}
-                  onChange={(e) => handleJsonChange(e.target.value)}
-                  disabled={disabled}
-                  placeholder={t('enterJsonSchema')}
-                  className={`w-full h-32 px-2 py-1.5 bg-slate-800 light:bg-slate-100 border rounded text-xs font-mono text-slate-200 light:text-slate-800 placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-cyan-500 resize-none ${
-                    jsonError
-                      ? 'border-red-500'
-                      : 'border-slate-700 light:border-slate-200'
-                  } ${disabled ? 'opacity-50 cursor-not-allowed' : ''}`}
-                />
-                {jsonError && (
-                  <div className="flex items-center gap-1 text-xs text-red-400">
-                    <AlertCircle className="w-3 h-3" />
-                    {jsonError}
-                  </div>
-                )}
-              </div>
-            )}
+          {/* JSON Editor */}
+          {mode === 'json' && (
+            <div className="space-y-2">
+              <textarea
+                value={jsonText}
+                onChange={(e) => handleJsonChange(e.target.value)}
+                disabled={disabled || !isEnabled}
+                placeholder={t('enterJsonSchema')}
+                className={`w-full h-32 px-2 py-1.5 bg-slate-800 light:bg-slate-100 border rounded text-xs font-mono text-slate-200 light:text-slate-800 placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-cyan-500 resize-none ${
+                  jsonError
+                    ? 'border-red-500'
+                    : 'border-slate-700 light:border-slate-200'
+                } ${(disabled || !isEnabled) ? 'opacity-50 cursor-not-allowed' : ''}`}
+              />
+              {jsonError && (
+                <div className="flex items-center gap-1 text-xs text-red-400">
+                  <AlertCircle className="w-3 h-3" />
+                  {jsonError}
+                </div>
+              )}
+            </div>
+          )}
 
-            <p className="text-xs text-slate-500">
-              {t('enabledAiReturnsJson')}
-            </p>
-          </div>
-        )}
+          <p className="text-xs text-slate-500">
+            {isEnabled ? t('enabledAiReturnsJson') : t('structuredOutputDisabledHint')}
+          </p>
+        </div>
       </Collapsible>
 
       {/* Import JSON Modal */}

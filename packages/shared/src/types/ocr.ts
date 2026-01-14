@@ -1,4 +1,4 @@
-export type OcrProvider = 'paddle' | 'datalab';
+export type OcrProvider = 'paddle' | 'paddle_vl' | 'datalab';
 
 export type OcrCredentialSource = 'system' | 'custom';
 
@@ -11,6 +11,7 @@ export interface OcrProviderSettings {
   apiKeyLast4: string | null;
   systemDefaults: {
     paddle: { baseUrl: string | null };
+    paddle_vl: { baseUrl: string | null };
     datalab: { baseUrl: string | null };
   };
 }
@@ -31,11 +32,13 @@ export interface OcrSystemProviderConfig {
 
 export interface OcrSystemProviderSettings {
   paddle: OcrSystemProviderConfig;
+  paddle_vl: OcrSystemProviderConfig;
   datalab: OcrSystemProviderConfig;
 }
 
 export interface UpdateOcrSystemProviderSettingsDto {
   paddle?: { baseUrl?: string | null; apiKey?: string | null };
+  paddle_vl?: { baseUrl?: string | null; apiKey?: string | null };
   datalab?: { baseUrl?: string | null; apiKey?: string | null };
 }
 

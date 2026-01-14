@@ -7,6 +7,10 @@ import {
   Save,
   History,
   FileText,
+  Folder,
+  FolderPlus,
+  ChevronDown,
+  ChevronRight,
   Clock,
   Loader2,
   Paperclip,
@@ -18,6 +22,7 @@ import {
   GitCompare,
   Cpu,
   Eye,
+  Pencil,
   Sparkles,
   Check,
   Copy,
@@ -31,14 +36,15 @@ import { Button, Input, Modal, Badge, Select, MarkdownRenderer, Tabs, Collapsibl
 import { MessageList, ParameterPanel, VariableEditor, DebugHistory, PromptOptimizer, PromptObserver, StructuredOutputEditor, ThinkingBlock, AttachmentModal, PromptTestPanel } from '../components/Prompt';
 import { ReasoningSelector } from '../components/Common/ReasoningSelector';
 import type { DebugRun } from '../components/Prompt';
-import { promptsApi, ApiError } from '../api';
+import { promptsApi, promptGroupsApi, ApiError } from '../api';
 import { chatApi, type ContentPart } from '../api/chat';
 import { uploadFileAttachment, extractThinking, type FileAttachment } from '../lib/ai-service';
 import { analyzePrompt, type PromptAnalysisResult } from '../lib/prompt-analyzer';
 import { inferReasoningSupport } from '../lib/model-capabilities';
 import { getFileInputAccept, isSupportedFileType } from '../lib/file-utils';
 import { formatDateTime } from '../lib/date-utils';
-import type { Prompt, PromptVersion, OcrProvider } from '../types';
+import { smartReplace } from '../lib/text-utils';
+import type { Prompt, PromptVersion, PromptGroup, OcrProvider } from '../types';
 import { PromptMessage, PromptConfig, PromptVariable, ReasoningEffort, DEFAULT_PROMPT_CONFIG } from '../types/database';
 import { useToast } from '../store/useUIStore';
 import { useGlobalStore } from '../store/useGlobalStore';
@@ -97,6 +103,8 @@ export function PromptsPage() {
   } = useGlobalStore();
 
   const [prompts, setPrompts] = useState<Prompt[]>([]);
+  const [promptGroups, setPromptGroups] = useState<PromptGroup[]>([]);
+  const [expandedGroupIds, setExpandedGroupIds] = useState<Record<string, boolean>>({});
   const [selectedPrompt, setSelectedPrompt] = useState<Prompt | null>(null);
   const [versions, setVersions] = useState<PromptVersion[]>([]);
   const [showNewPrompt, setShowNewPrompt] = useState(false);
@@ -138,13 +146,21 @@ export function PromptsPage() {
   const [selectedModel, setSelectedModel] = useState('');
   const [saving, setSaving] = useState(false);
   const [newPromptName, setNewPromptName] = useState('');
+  const [newPromptGroupId, setNewPromptGroupId] = useState<string>('');
+  const [creatingGroup, setCreatingGroup] = useState(false);
+  const [editingGroupId, setEditingGroupId] = useState<string | null>(null);
+  const [editingGroupName, setEditingGroupName] = useState('');
   const [attachedFiles, setAttachedFiles] = useState<FileAttachment[]>([]);
-  const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
+  const [draggedPromptId, setDraggedPromptId] = useState<string | null>(null);
+  const [draggedPromptGroupId, setDraggedPromptGroupId] = useState<string | null>(null);
   const [copyingPromptId, setCopyingPromptId] = useState<string | null>(null);
   const [deletingPromptId, setDeletingPromptId] = useState<string | null>(null);
+  const [deletingGroupId, setDeletingGroupId] = useState<string | null>(null);
   const [loadingPromptId, setLoadingPromptId] = useState<string | null>(null);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [deleteConfirmTarget, setDeleteConfirmTarget] = useState<{ id: string; name: string } | null>(null);
+  const [showDeleteGroupConfirm, setShowDeleteGroupConfirm] = useState(false);
+  const [deleteGroupTarget, setDeleteGroupTarget] = useState<PromptGroup | null>(null);
   const [activeTab, setActiveTab] = useState<TabType>('edit');
   const [debugRuns, setDebugRuns] = useState<DebugRun[]>([]);
   const [selectedDebugRun, setSelectedDebugRun] = useState<DebugRun | null>(null);
@@ -156,11 +172,22 @@ export function PromptsPage() {
   const [optimizeModelId, setOptimizeModelId] = useState('');
   const [previewAttachment, setPreviewAttachment] = useState<FileAttachment | null>(null);
   const compareFileInputRef = useRef<HTMLInputElement>(null);
+  const editingGroupInputRef = useRef<HTMLInputElement>(null);
+  const ignoreGroupNameBlurRef = useRef(false);
+  const isFinalizingDragRef = useRef(false);
   const selectPromptRequestIdRef = useRef(0);
 
   useEffect(() => {
     loadData();
   }, []);
+
+  useEffect(() => {
+    if (!editingGroupId) return;
+    const input = editingGroupInputRef.current;
+    if (!input) return;
+    input.focus();
+    input.select();
+  }, [editingGroupId]);
 
   // Set default model when models are loaded
   useEffect(() => {
@@ -197,7 +224,7 @@ export function PromptsPage() {
       setSelectedDebugRun(null);
       setShowDebugDetail(null);
     }
-  }, [selectedPrompt]);
+  }, [selectedPrompt?.id]);
 
   const hasUnsavedChanges = useMemo(() => {
     if (!selectedPrompt) return false;
@@ -227,8 +254,14 @@ export function PromptsPage() {
       // Load providers and models from global store (with caching)
       await fetchProvidersAndModels();
 
-      // Load prompts
-      const promptsData = await promptsApi.list();
+      // Load prompts and groups
+      const [promptsData, groupsData] = await Promise.all([
+        promptsApi.list(),
+        promptGroupsApi.list(),
+      ]);
+
+      setPromptGroups((groupsData || []) as PromptGroup[]);
+
       if (promptsData) {
         // Sort by orderIndex then by updatedAt (descending)
         const sorted = [...promptsData].sort((a, b) => {
@@ -305,16 +338,112 @@ export function PromptsPage() {
         variables: [],
         messages: [],
         config: toApiConfig(DEFAULT_PROMPT_CONFIG),
+        groupId: newPromptGroupId ? newPromptGroupId : null,
       });
 
       setPrompts((prev) => [data as Prompt, ...prev]);
       setSelectedPrompt(data as Prompt);
       invalidatePromptsCache(data);
       setNewPromptName('');
+      setNewPromptGroupId('');
       setShowNewPrompt(false);
       showToast('success', t('promptCreated'));
     } catch (e) {
       showToast('error', t('createFailed') + ': ' + (e instanceof Error ? e.message : 'Unknown error'));
+    }
+  };
+
+  const startEditGroupName = (group: PromptGroup) => {
+    setEditingGroupId(group.id);
+    setEditingGroupName(group.name);
+  };
+
+  const cancelEditGroupName = () => {
+    setEditingGroupId(null);
+    setEditingGroupName('');
+  };
+
+  const saveEditingGroupName = async (groupId: string) => {
+    const nextName = editingGroupName.trim() || t('unnamedGroup');
+    const currentName = promptGroups.find((g) => g.id === groupId)?.name ?? '';
+
+    if (currentName === nextName) {
+      cancelEditGroupName();
+      return true;
+    }
+
+    try {
+      const updated = await promptGroupsApi.update(groupId, { name: nextName });
+      setPromptGroups((prev) => prev.map((g) => (g.id === groupId ? (updated as PromptGroup) : g)));
+      cancelEditGroupName();
+      return true;
+    } catch (e) {
+      showToast('error', t('updateFailed') + ': ' + (e instanceof Error ? e.message : 'Unknown error'));
+      return false;
+    }
+  };
+
+  const handleQuickCreateGroup = async (parentId: string | null) => {
+    if (creatingGroup) return;
+
+    setCreatingGroup(true);
+    try {
+      const group = await promptGroupsApi.create({
+        name: t('unnamedGroup'),
+        parentId,
+      });
+
+      setPromptGroups((prev) => [...prev, group as PromptGroup]);
+      setExpandedGroupIds((prev) => ({
+        ...prev,
+        ...(parentId ? { [parentId]: true } : {}),
+        [group.id]: true,
+      }));
+
+      startEditGroupName(group as PromptGroup);
+    } catch (e) {
+      showToast('error', t('createGroupFailed') + ': ' + (e instanceof Error ? e.message : 'Unknown error'));
+    } finally {
+      setCreatingGroup(false);
+    }
+  };
+
+  const requestDeleteGroup = (group: PromptGroup) => {
+    setDeleteGroupTarget(group);
+    setShowDeleteGroupConfirm(true);
+  };
+
+  const deleteGroupById = async (groupId: string) => {
+    setDeletingGroupId(groupId);
+    try {
+      await promptGroupsApi.delete(groupId);
+
+      setPromptGroups((prev) =>
+        prev
+          .filter((g) => g.id !== groupId)
+          // Server lifts direct children to top-level when deleting a parent group.
+          .map((g) => (g.parentId === groupId ? { ...g, parentId: null } : g))
+      );
+
+      setPrompts((prev) => prev.map((p) => (p.groupId === groupId ? { ...p, groupId: null } : p)));
+      setSelectedPrompt((prev) => (prev && prev.groupId === groupId ? { ...prev, groupId: null } : prev));
+      setExpandedGroupIds((prev) => {
+        const next = { ...prev };
+        delete next[groupId];
+        return next;
+      });
+
+      if (editingGroupId === groupId) {
+        cancelEditGroupName();
+      }
+
+      showToast('success', t('groupDeleted'));
+      return true;
+    } catch (e) {
+      showToast('error', t('deleteGroupFailed') + ': ' + (e instanceof Error ? e.message : 'Unknown error'));
+      return false;
+    } finally {
+      setDeletingGroupId(null);
     }
   };
 
@@ -515,38 +644,147 @@ export function PromptsPage() {
     showToast('info', t('restoredToVersion', { version: version.version }));
   };
 
-  const handleDragStart = (index: number) => {
-    setDraggedIndex(index);
+  const handleDragStart = (prompt: Prompt) => {
+    if (searchQuery.trim()) return;
+    setDraggedPromptId(prompt.id);
+    setDraggedPromptGroupId(prompt.groupId ?? null);
   };
 
-  const handleDragOver = (e: React.DragEvent, index: number) => {
+  const handleDragOver = (e: React.DragEvent, targetPrompt: Prompt) => {
     e.preventDefault();
-    if (draggedIndex === null || draggedIndex === index) return;
+    if (searchQuery.trim()) return;
+    if (!draggedPromptId) return;
+    if (draggedPromptId === targetPrompt.id) return;
 
-    const newPrompts = [...prompts];
-    const draggedPrompt = newPrompts[draggedIndex];
-    newPrompts.splice(draggedIndex, 1);
-    newPrompts.splice(index, 0, draggedPrompt);
+    const draggedPrompt = prompts.find((p) => p.id === draggedPromptId);
+    if (!draggedPrompt) return;
 
-    setPrompts(newPrompts);
-    setDraggedIndex(index);
+    const currentGroupId = draggedPrompt.groupId ?? null;
+    const targetGroupId = targetPrompt.groupId ?? null;
+
+    const currentList = promptsByGroupId.get(currentGroupId) ?? [];
+    const targetList = promptsByGroupId.get(targetGroupId) ?? [];
+
+    const fromIndex = currentList.findIndex((p) => p.id === draggedPromptId);
+    if (fromIndex === -1) return;
+
+    if (currentGroupId === targetGroupId) {
+      const toIndex = currentList.findIndex((p) => p.id === targetPrompt.id);
+      if (toIndex === -1) return;
+
+      const reordered = [...currentList];
+      const [moved] = reordered.splice(fromIndex, 1);
+      reordered.splice(toIndex, 0, moved);
+
+      const orderIndexById = new Map<string, number>();
+      reordered.forEach((p, i) => orderIndexById.set(p.id, i));
+
+      setPrompts((prev) =>
+        prev.map((p) => (orderIndexById.has(p.id) ? { ...p, orderIndex: orderIndexById.get(p.id)! } : p))
+      );
+      return;
+    }
+
+    const toIndex = targetList.findIndex((p) => p.id === targetPrompt.id);
+    if (toIndex === -1) return;
+
+    const sourceNext = [...currentList];
+    const [moved] = sourceNext.splice(fromIndex, 1);
+
+    const targetNext = [...targetList].filter((p) => p.id !== draggedPromptId);
+    targetNext.splice(toIndex, 0, { ...moved, groupId: targetGroupId });
+
+    const updates = new Map<string, { orderIndex: number; groupId?: string | null }>();
+    sourceNext.forEach((p, i) => updates.set(p.id, { orderIndex: i }));
+    targetNext.forEach((p, i) =>
+      updates.set(p.id, { orderIndex: i, ...(p.id === draggedPromptId ? { groupId: targetGroupId } : {}) })
+    );
+
+    setPrompts((prev) =>
+      prev.map((p) => {
+        const next = updates.get(p.id);
+        if (!next) return p;
+        return { ...p, orderIndex: next.orderIndex, ...(typeof next.groupId !== 'undefined' ? { groupId: next.groupId } : {}) };
+      })
+    );
+
+    setSelectedPrompt((prev) => (prev && prev.id === draggedPromptId ? { ...prev, groupId: targetGroupId } : prev));
+  };
+
+  const handleDragOverGroup = (e: React.DragEvent, targetGroupId: string | null) => {
+    e.preventDefault();
+    if (searchQuery.trim()) return;
+    if (!draggedPromptId) return;
+
+    const draggedPrompt = prompts.find((p) => p.id === draggedPromptId);
+    if (!draggedPrompt) return;
+
+    const currentGroupId = draggedPrompt.groupId ?? null;
+    const currentList = promptsByGroupId.get(currentGroupId) ?? [];
+    const targetList = promptsByGroupId.get(targetGroupId) ?? [];
+
+    const fromIndex = currentList.findIndex((p) => p.id === draggedPromptId);
+    if (fromIndex === -1) return;
+
+    const sourceNext = [...currentList];
+    const [moved] = sourceNext.splice(fromIndex, 1);
+
+    const targetNext = [...targetList].filter((p) => p.id !== draggedPromptId);
+    targetNext.push({ ...moved, groupId: targetGroupId });
+
+    const updates = new Map<string, { orderIndex: number; groupId?: string | null }>();
+    sourceNext.forEach((p, i) => updates.set(p.id, { orderIndex: i }));
+    targetNext.forEach((p, i) =>
+      updates.set(p.id, { orderIndex: i, ...(p.id === draggedPromptId ? { groupId: targetGroupId } : {}) })
+    );
+
+    setPrompts((prev) =>
+      prev.map((p) => {
+        const next = updates.get(p.id);
+        if (!next) return p;
+        return { ...p, orderIndex: next.orderIndex, ...(typeof next.groupId !== 'undefined' ? { groupId: next.groupId } : {}) };
+      })
+    );
+
+    setSelectedPrompt((prev) => (prev && prev.id === draggedPromptId ? { ...prev, groupId: targetGroupId } : prev));
   };
 
   const handleDragEnd = async () => {
-    if (draggedIndex === null) return;
+    if (isFinalizingDragRef.current) return;
 
-    const updates = prompts.map((p, i) => ({
-      id: p.id,
-      orderIndex: i,
-    }));
+    const currentDraggedId = draggedPromptId;
+    const currentDraggedGroupId = draggedPromptGroupId;
+
+    // Clear drag state immediately to remove visual feedback
+    setDraggedPromptId(null);
+    setDraggedPromptGroupId(null);
+
+    if (!currentDraggedId) return;
+    if (searchQuery.trim()) return;
+
+    isFinalizingDragRef.current = true;
+
+    const sourceGroupId = currentDraggedGroupId ?? null;
+    const draggedPrompt = prompts.find((p) => p.id === currentDraggedId);
+    const targetGroupId = draggedPrompt?.groupId ?? null;
+
+    const affectedGroupIds = Array.from(new Set([sourceGroupId, targetGroupId]));
+    const updates = affectedGroupIds.flatMap((groupId) =>
+      (promptsByGroupId.get(groupId) ?? []).map((p, i) => ({ id: p.id, orderIndex: i }))
+    );
 
     try {
-      await promptsApi.batchUpdateOrder(updates);
+      if (sourceGroupId !== targetGroupId) {
+        await promptsApi.update(currentDraggedId, { groupId: targetGroupId });
+      }
+      if (updates.length > 0) {
+        await promptsApi.batchUpdateOrder(updates);
+      }
     } catch (e) {
       console.error('Failed to update order:', e);
+    } finally {
+      isFinalizingDragRef.current = false;
     }
-
-    setDraggedIndex(null);
   };
 
   const handleReplayDebugRun = (run: DebugRun) => {
@@ -623,13 +861,90 @@ export function PromptsPage() {
     p.name.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
+  type GroupTreeNode = PromptGroup & { depth: number; children: GroupTreeNode[] };
+
+  const groupTree = useMemo<GroupTreeNode[]>(() => {
+    const byParent = new Map<string | null, PromptGroup[]>();
+    for (const g of promptGroups) {
+      const key = g.parentId ?? null;
+      byParent.set(key, [...(byParent.get(key) ?? []), g]);
+    }
+
+    const sortGroups = (list: PromptGroup[]) =>
+      [...list].sort((a, b) => {
+        const orderDiff = (a.orderIndex || 0) - (b.orderIndex || 0);
+        if (orderDiff !== 0) return orderDiff;
+        return new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime();
+      });
+
+    const build = (parentId: string | null, depth: number): GroupTreeNode[] => {
+      if (depth > 3) return [];
+      const children = sortGroups(byParent.get(parentId) ?? []);
+      return children.map((g) => ({
+        ...g,
+        depth,
+        children: build(g.id, depth + 1),
+      }));
+    };
+
+    return build(null, 1);
+  }, [promptGroups]);
+
+  const groupSelectOptions = useMemo(() => {
+    const options: Array<{ value: string; label: string; depth: number }> = [];
+
+    const walk = (nodes: GroupTreeNode[]) => {
+      for (const node of nodes) {
+        // Use non-breaking spaces for proper indentation in select options
+        // depth 1: no indent, depth 2: "├─ ", depth 3: "│  ├─ ", etc.
+        let prefix = '';
+        if (node.depth > 1) {
+          // Add vertical lines for each level above
+          prefix = '\u00A0\u00A0\u00A0'.repeat(node.depth - 2) + '├─\u00A0';
+        }
+        options.push({ value: node.id, label: `${prefix}${node.name}`, depth: node.depth });
+        if (node.children.length > 0) walk(node.children);
+      }
+    };
+
+    walk(groupTree);
+    return options;
+  }, [groupTree]);
+
+  const promptsByGroupId = useMemo(() => {
+    const map = new Map<string | null, Prompt[]>();
+    for (const p of filteredPrompts) {
+      const key = p.groupId ?? null;
+      map.set(key, [...(map.get(key) ?? []), p]);
+    }
+
+    for (const [key, list] of map.entries()) {
+      map.set(
+        key,
+        [...list].sort((a, b) => {
+          const orderDiff = (a.orderIndex || 0) - (b.orderIndex || 0);
+          if (orderDiff !== 0) return orderDiff;
+          return new Date(b.updatedAt || 0).getTime() - new Date(a.updatedAt || 0).getTime();
+        })
+      );
+    }
+
+    return map;
+  }, [filteredPrompts]);
+
   const getModelName = (modelId: string | null) => {
     if (!modelId) return null;
     return models.find((m) => m.id === modelId)?.name;
   };
 
-  const formatRelativeTime = (dateString: string) => {
+  const formatRelativeTime = (dateString: string | null | undefined) => {
+    if (!dateString) return '-';
+
     const date = new Date(dateString);
+
+    // Check if date is valid
+    if (isNaN(date.getTime())) return '-';
+
     const now = new Date();
     const diffMs = now.getTime() - date.getTime();
     const diffMins = Math.floor(diffMs / 60000);
@@ -982,6 +1297,265 @@ export function PromptsPage() {
     setCompareFiles((prev) => prev.filter((_, i) => i !== index));
   };
 
+  const toggleGroupExpanded = useCallback((groupId: string) => {
+    setExpandedGroupIds((prev) => ({ ...prev, [groupId]: !(prev[groupId] ?? true) }));
+  }, []);
+
+  const isGroupExpanded = useCallback(
+    (groupId: string) => (searchQuery.trim() ? true : expandedGroupIds[groupId] ?? true),
+    [expandedGroupIds, searchQuery]
+  );
+
+  const groupHasVisibleContent = useCallback(
+    (node: GroupTreeNode): boolean => {
+      const directPrompts = promptsByGroupId.get(node.id) ?? [];
+      if (directPrompts.length > 0) return true;
+      return node.children.some(groupHasVisibleContent);
+    },
+    [promptsByGroupId]
+  );
+
+  const renderPromptRow = (prompt: Prompt, depth: number) => {
+    const modelName = getModelName(prompt.defaultModelId);
+    const isActive = selectedPrompt?.id === prompt.id || loadingPromptId === prompt.id;
+    const paddingLeft = 12 + Math.max(0, depth - 1) * 12;
+    const dragEnabled = !searchQuery.trim();
+
+    return (
+      <div
+        key={prompt.id}
+        draggable={dragEnabled}
+        onDragStart={() => handleDragStart(prompt)}
+        onDragOver={(e) => handleDragOver(e, prompt)}
+        onDrop={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          void handleDragEnd();
+        }}
+        onDragEnd={handleDragEnd}
+        onClick={() => handleSelectPrompt(prompt.id)}
+        style={{ paddingLeft }}
+        className={`group w-full flex items-start gap-2 pr-3 py-3 rounded-lg text-left transition-colors cursor-pointer ${
+          isActive
+            ? 'bg-slate-800 light:bg-cyan-50 border border-slate-600 light:border-cyan-200'
+            : 'hover:bg-slate-800/50 light:hover:bg-slate-100 border border-transparent'
+        } ${draggedPromptId === prompt.id ? 'opacity-50' : ''}`}
+      >
+        {dragEnabled ? (
+          <GripVertical className="w-4 h-4 text-slate-600 light:text-slate-400 mt-0.5 flex-shrink-0 cursor-grab active:cursor-grabbing" />
+        ) : (
+          <div className="w-4 h-4 mt-0.5 flex-shrink-0" />
+        )}
+        {loadingPromptId === prompt.id ? (
+          <Loader2 className="w-5 h-5 text-slate-500 light:text-slate-400 mt-0.5 flex-shrink-0 animate-spin" />
+        ) : (
+          <FileText className="w-5 h-5 text-slate-500 light:text-slate-400 mt-0.5 flex-shrink-0" />
+        )}
+        <div className="flex-1 min-w-0">
+          <p className="text-sm font-medium text-slate-200 light:text-slate-800 truncate">
+            {prompt.name}
+          </p>
+          <div className="flex items-center gap-1.5 mt-1 text-xs text-slate-500 light:text-slate-600 whitespace-nowrap">
+            <span>v{prompt.currentVersion}</span>
+            <span className="text-slate-600 light:text-slate-400">|</span>
+            <Clock className="w-3 h-3 flex-shrink-0" />
+            <span className="truncate">{formatRelativeTime(prompt.updatedAt)}</span>
+          </div>
+          {modelName && (
+            <div className="flex items-center gap-1 mt-1.5">
+              <Cpu className="w-3 h-3 text-cyan-500 light:text-cyan-600" />
+              <span className="text-xs text-cyan-400 light:text-cyan-600 truncate">{modelName}</span>
+            </div>
+          )}
+        </div>
+
+        <div
+          className={`flex items-center gap-1 mt-0.5 transition-opacity ${
+            isActive ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100'
+          }`}
+        >
+          <button
+            type="button"
+            draggable={false}
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={(e) => {
+              e.stopPropagation();
+              handleQuickCopyPrompt(prompt.id);
+            }}
+            disabled={copyingPromptId === prompt.id || deletingPromptId === prompt.id}
+            className="p-1.5 rounded hover:bg-slate-700 light:hover:bg-slate-200 text-slate-400 light:text-slate-500 hover:text-slate-200 light:hover:text-slate-700 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            title={tCommon('copy')}
+          >
+            {copyingPromptId === prompt.id ? (
+              <Loader2 className="w-4 h-4 animate-spin" />
+            ) : (
+              <Copy className="w-4 h-4" />
+            )}
+          </button>
+          <button
+            type="button"
+            draggable={false}
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={(e) => {
+              e.stopPropagation();
+              requestDeletePrompt(prompt.id);
+            }}
+            disabled={deletingPromptId === prompt.id || copyingPromptId === prompt.id}
+            className="p-1.5 rounded hover:bg-slate-700 light:hover:bg-slate-200 text-rose-400 light:text-rose-500 hover:text-rose-300 light:hover:text-rose-600 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            title={tCommon('delete')}
+          >
+            {deletingPromptId === prompt.id ? (
+              <Loader2 className="w-4 h-4 animate-spin" />
+            ) : (
+              <Trash2 className="w-4 h-4" />
+            )}
+          </button>
+        </div>
+      </div>
+    );
+  };
+
+  const renderGroupNode = (node: GroupTreeNode) => {
+    const showEmptyGroups = !searchQuery.trim();
+    const hasContent = groupHasVisibleContent(node);
+    if (!showEmptyGroups && !hasContent) return null;
+
+    const expanded = isGroupExpanded(node.id);
+    const isEditingName = editingGroupId === node.id;
+    const paddingLeft = 12 + Math.max(0, node.depth - 1) * 12;
+
+    return (
+      <div key={node.id} className="space-y-1">
+        <div
+          role="button"
+          tabIndex={0}
+          onClick={() => {
+            if (isEditingName) return;
+            toggleGroupExpanded(node.id);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              if (isEditingName) return;
+              toggleGroupExpanded(node.id);
+            }
+          }}
+          onDragOver={(e) => handleDragOverGroup(e, node.id)}
+          onDrop={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            void handleDragEnd();
+          }}
+          style={{ paddingLeft }}
+          className="group w-full flex items-center gap-2 pr-3 py-2 rounded-lg text-left transition-colors cursor-pointer hover:bg-slate-800/50 light:hover:bg-slate-100 border border-transparent"
+        >
+          {expanded ? (
+            <ChevronDown className="w-4 h-4 text-slate-500 light:text-slate-400 flex-shrink-0" />
+          ) : (
+            <ChevronRight className="w-4 h-4 text-slate-500 light:text-slate-400 flex-shrink-0" />
+          )}
+          <Folder className="w-4 h-4 text-slate-500 light:text-slate-400 flex-shrink-0" />
+          {isEditingName ? (
+            <input
+              ref={editingGroupInputRef}
+              value={editingGroupName}
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={(e) => e.stopPropagation()}
+              onChange={(e) => setEditingGroupName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  ignoreGroupNameBlurRef.current = true;
+                  void saveEditingGroupName(node.id);
+                }
+                if (e.key === 'Escape') {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  ignoreGroupNameBlurRef.current = true;
+                  cancelEditGroupName();
+                }
+              }}
+              onBlur={() => {
+                if (ignoreGroupNameBlurRef.current) {
+                  ignoreGroupNameBlurRef.current = false;
+                  return;
+                }
+                void saveEditingGroupName(node.id);
+              }}
+              className="flex-1 min-w-0 px-2 py-1 bg-slate-800/60 light:bg-white border border-slate-700 light:border-slate-300 rounded text-sm font-medium text-slate-200 light:text-slate-800 focus:outline-none focus:ring-2 focus:ring-cyan-500/50 focus:border-cyan-500"
+            />
+          ) : (
+            <span
+              className="flex-1 min-w-0 text-sm font-medium text-slate-200 light:text-slate-800 truncate"
+              onDoubleClick={(e) => {
+                e.stopPropagation();
+                startEditGroupName(node);
+              }}
+              title={tCommon('edit')}
+            >
+              {node.name}
+            </span>
+          )}
+
+          <div className="flex items-center gap-1 transition-opacity opacity-0 group-hover:opacity-100 group-focus-within:opacity-100">
+            {node.depth < 3 && (
+              <button
+                type="button"
+                draggable={false}
+                onMouseDown={(e) => e.stopPropagation()}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  void handleQuickCreateGroup(node.id);
+                }}
+                disabled={creatingGroup}
+                className="p-1.5 rounded hover:bg-slate-700 light:hover:bg-slate-200 text-slate-400 light:text-slate-500 hover:text-slate-200 light:hover:text-slate-700 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                title={t('addChildGroup')}
+              >
+                <FolderPlus className="w-4 h-4" />
+              </button>
+            )}
+            {!isEditingName && (
+              <button
+                type="button"
+                draggable={false}
+                onMouseDown={(e) => e.stopPropagation()}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  startEditGroupName(node);
+                }}
+                className="p-1.5 rounded hover:bg-slate-700 light:hover:bg-slate-200 text-slate-400 light:text-slate-500 hover:text-slate-200 light:hover:text-slate-700 transition-colors"
+                title={tCommon('edit')}
+              >
+                <Pencil className="w-4 h-4" />
+              </button>
+            )}
+            <button
+              type="button"
+              draggable={false}
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={(e) => {
+                e.stopPropagation();
+                requestDeleteGroup(node);
+              }}
+              className="p-1.5 rounded hover:bg-slate-700 light:hover:bg-slate-200 text-rose-400 light:text-rose-500 hover:text-rose-300 light:hover:text-rose-600 transition-colors"
+              title={tCommon('delete')}
+            >
+              <Trash2 className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+
+        {expanded && (
+          <div className="space-y-1">
+            {node.children.map((child) => renderGroupNode(child))}
+            {(promptsByGroupId.get(node.id) ?? []).map((p) => renderPromptRow(p, node.depth + 1))}
+          </div>
+        )}
+      </div>
+    );
+  };
+
   const tabs = [
     { id: 'edit' as TabType, label: t('tabEdit'), icon: <FileText className="w-4 h-4" /> },
     { id: 'observe' as TabType, label: t('tabHistory'), icon: <Eye className="w-4 h-4" /> },
@@ -991,7 +1565,7 @@ export function PromptsPage() {
   return (
     <div className="h-full flex overflow-hidden bg-slate-950 light:bg-slate-50">
       {/* Left sidebar - Prompt list */}
-      <div className="w-72 bg-slate-900/50 light:bg-white border-r border-slate-700 light:border-slate-200 flex flex-col overflow-hidden">
+      <div className="w-80 bg-slate-900/50 light:bg-white border-r border-slate-700 light:border-slate-200 flex flex-col overflow-hidden">
         <div className="flex-shrink-0 p-4 space-y-3 border-b border-slate-700 light:border-slate-200">
           <div className="relative">
             <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 light:text-slate-400" />
@@ -1007,97 +1581,74 @@ export function PromptsPage() {
             <Plus className="w-4 h-4" />
             <span>{t('newPrompt')}</span>
           </Button>
+          <Button
+            variant="secondary"
+            className="w-full"
+            onClick={() => void handleQuickCreateGroup(null)}
+            disabled={creatingGroup}
+          >
+            <FolderPlus className="w-4 h-4" />
+            <span>{t('newGroup')}</span>
+          </Button>
         </div>
 
         <div className="flex-1 overflow-y-auto p-2 space-y-1">
-          {filteredPrompts.map((prompt, index) => {
-            const modelName = getModelName(prompt.defaultModelId);
-            const isActive = selectedPrompt?.id === prompt.id || loadingPromptId === prompt.id;
-            return (
-              <div
-                key={prompt.id}
-                draggable
-                onDragStart={() => handleDragStart(index)}
-                onDragOver={(e) => handleDragOver(e, index)}
-                onDragEnd={handleDragEnd}
-                onClick={() => handleSelectPrompt(prompt.id)}
-                className={`group w-full flex items-start gap-2 p-3 rounded-lg text-left transition-colors cursor-pointer ${
-                  isActive
-                    ? 'bg-slate-800 light:bg-cyan-50 border border-slate-600 light:border-cyan-200'
-                    : 'hover:bg-slate-800/50 light:hover:bg-slate-100 border border-transparent'
-                } ${draggedIndex === index ? 'opacity-50' : ''}`}
-              >
-                <GripVertical className="w-4 h-4 text-slate-600 light:text-slate-400 mt-0.5 flex-shrink-0 cursor-grab active:cursor-grabbing" />
-                {loadingPromptId === prompt.id ? (
-                  <Loader2 className="w-5 h-5 text-slate-500 light:text-slate-400 mt-0.5 flex-shrink-0 animate-spin" />
-                ) : (
-                  <FileText className="w-5 h-5 text-slate-500 light:text-slate-400 mt-0.5 flex-shrink-0" />
-                )}
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium text-slate-200 light:text-slate-800 truncate">
-                    {prompt.name}
-                  </p>
-                  <div className="flex items-center gap-2 mt-1 flex-wrap">
-                    <span className="text-xs text-slate-500 light:text-slate-600">v{prompt.currentVersion}</span>
-                    <span className="text-xs text-slate-600 light:text-slate-400">|</span>
-                    <span className="text-xs text-slate-500 light:text-slate-600 flex items-center gap-1">
-                      <Clock className="w-3 h-3" />
-                      {formatRelativeTime(prompt.updatedAt)}
-                    </span>
-                  </div>
-                  {modelName && (
-                    <div className="flex items-center gap-1 mt-1.5">
-                      <Cpu className="w-3 h-3 text-cyan-500 light:text-cyan-600" />
-                      <span className="text-xs text-cyan-400 light:text-cyan-600 truncate">{modelName}</span>
-                    </div>
-                  )}
-                </div>
+          {filteredPrompts.length === 0 && searchQuery.trim() ? (
+            <div className="px-3 py-6 text-center text-sm text-slate-500 light:text-slate-600">
+              {t('noResults')}
+            </div>
+          ) : (
+            <>
+              {groupTree.map((node) => renderGroupNode(node))}
 
-                <div
-                  className={`flex items-center gap-1 mt-0.5 transition-opacity ${
-                    isActive ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100'
-                  }`}
-                >
-                  <button
-                    type="button"
-                    draggable={false}
-                    onMouseDown={(e) => e.stopPropagation()}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleQuickCopyPrompt(prompt.id);
-                    }}
-                    disabled={copyingPromptId === prompt.id || deletingPromptId === prompt.id}
-                    className="p-1.5 rounded hover:bg-slate-700 light:hover:bg-slate-200 text-slate-400 light:text-slate-500 hover:text-slate-200 light:hover:text-slate-700 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-                    title={tCommon('copy')}
-                  >
-                    {copyingPromptId === prompt.id ? (
-                      <Loader2 className="w-4 h-4 animate-spin" />
-                    ) : (
-                      <Copy className="w-4 h-4" />
+              {(() => {
+                const ungroupedPrompts = promptsByGroupId.get(null) ?? [];
+                const showUngrouped = !searchQuery.trim() || ungroupedPrompts.length > 0;
+                if (!showUngrouped) return null;
+
+                const ungroupedKey = '__ungrouped__';
+                const expanded = isGroupExpanded(ungroupedKey);
+
+                return (
+                  <div key={ungroupedKey} className="space-y-1">
+                    <div
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => toggleGroupExpanded(ungroupedKey)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault();
+                          toggleGroupExpanded(ungroupedKey);
+                        }
+                      }}
+                      onDragOver={(e) => handleDragOverGroup(e, null)}
+                      onDrop={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        void handleDragEnd();
+                      }}
+                      style={{ paddingLeft: 12 }}
+                      className="w-full flex items-center gap-2 pr-3 py-2 rounded-lg text-left transition-colors cursor-pointer hover:bg-slate-800/50 light:hover:bg-slate-100 border border-transparent"
+                    >
+                      {expanded ? (
+                        <ChevronDown className="w-4 h-4 text-slate-500 light:text-slate-400 flex-shrink-0" />
+                      ) : (
+                        <ChevronRight className="w-4 h-4 text-slate-500 light:text-slate-400 flex-shrink-0" />
+                      )}
+                      <Folder className="w-4 h-4 text-slate-500 light:text-slate-400 flex-shrink-0" />
+                      <span className="text-sm font-medium text-slate-200 light:text-slate-800 truncate">{t('ungrouped')}</span>
+                    </div>
+
+                    {expanded && (
+                      <div className="space-y-1">
+                        {ungroupedPrompts.map((p) => renderPromptRow(p, 2))}
+                      </div>
                     )}
-                  </button>
-                  <button
-                    type="button"
-                    draggable={false}
-                    onMouseDown={(e) => e.stopPropagation()}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      requestDeletePrompt(prompt.id);
-                    }}
-                    disabled={deletingPromptId === prompt.id || copyingPromptId === prompt.id}
-                    className="p-1.5 rounded hover:bg-slate-700 light:hover:bg-slate-200 text-rose-400 light:text-rose-500 hover:text-rose-300 light:hover:text-rose-600 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-                    title={tCommon('delete')}
-                  >
-                    {deletingPromptId === prompt.id ? (
-                      <Loader2 className="w-4 h-4 animate-spin" />
-                    ) : (
-                      <Trash2 className="w-4 h-4" />
-                    )}
-                  </button>
-                </div>
-              </div>
-            );
-          })}
+                  </div>
+                );
+              })()}
+            </>
+          )}
         </div>
       </div>
 
@@ -1352,24 +1903,46 @@ export function PromptsPage() {
                     onApplySuggestion={(suggestion) => {
                       if (!suggestion.originalText || !suggestion.suggestedText) return;
 
+                      let anyReplaced = false;
+
                       if (suggestion.messageIndex !== undefined && promptMessages[suggestion.messageIndex]) {
-                        const newMessages = [...promptMessages];
-                        newMessages[suggestion.messageIndex] = {
-                          ...newMessages[suggestion.messageIndex],
-                          content: newMessages[suggestion.messageIndex].content.replace(
-                            suggestion.originalText,
-                            suggestion.suggestedText
-                          ),
-                        };
-                        setPromptMessages(newMessages);
-                      } else {
-                        const newMessages = promptMessages.map((msg) => ({
-                          ...msg,
-                          content: msg.content.replace(suggestion.originalText!, suggestion.suggestedText!),
-                        }));
-                        setPromptMessages(newMessages);
+                        // Try to replace in specific message
+                        const result = smartReplace(
+                          promptMessages[suggestion.messageIndex].content,
+                          suggestion.originalText,
+                          suggestion.suggestedText
+                        );
+                        if (result.replaced) {
+                          const newMessages = [...promptMessages];
+                          newMessages[suggestion.messageIndex] = {
+                            ...newMessages[suggestion.messageIndex],
+                            content: result.content,
+                          };
+                          setPromptMessages(newMessages);
+                          anyReplaced = true;
+                        }
                       }
-                      showToast('success', t('suggestionApplied'));
+
+                      if (!anyReplaced) {
+                        // Try to replace in all messages
+                        const newMessages = promptMessages.map((msg) => {
+                          const result = smartReplace(msg.content, suggestion.originalText!, suggestion.suggestedText!);
+                          if (result.replaced) anyReplaced = true;
+                          return {
+                            ...msg,
+                            content: result.content,
+                          };
+                        });
+                        if (anyReplaced) {
+                          setPromptMessages(newMessages);
+                        }
+                      }
+
+                      if (anyReplaced) {
+                        showToast('success', t('suggestionApplied'));
+                      } else {
+                        showToast('info', '未找到匹配的文本，请手动修改');
+                      }
                     }}
                     onOptimize={handleOptimize}
                     isOptimizing={isOptimizing}
@@ -1434,8 +2007,85 @@ export function PromptsPage() {
         </div>
       </Modal>
 
+      {/* Delete group confirmation modal */}
+      <Modal
+        isOpen={showDeleteGroupConfirm}
+        onClose={() => {
+          setShowDeleteGroupConfirm(false);
+          setDeleteGroupTarget(null);
+        }}
+        title={t('confirmDelete')}
+        size="sm"
+      >
+        <div className="space-y-4">
+          <p className="text-sm text-slate-300 light:text-slate-700">
+            {t('confirmDeleteGroup', { name: deleteGroupTarget?.name || '' })}
+          </p>
+
+          {!!deleteGroupTarget && (
+            <div className="space-y-2">
+              {(() => {
+                const directPromptCount = prompts.filter((p) => (p.groupId ?? null) === deleteGroupTarget.id).length;
+                const directChildGroupCount = promptGroups.filter((g) => (g.parentId ?? null) === deleteGroupTarget.id).length;
+
+                return (
+                  <>
+                    {directPromptCount > 0 && (
+                      <p className="text-sm text-slate-500 light:text-slate-600">
+                        {t('deleteGroupWillUngroupPrompts', { count: directPromptCount })}
+                      </p>
+                    )}
+                    {directChildGroupCount > 0 && (
+                      <p className="text-sm text-slate-500 light:text-slate-600">
+                        {t('deleteGroupWillPromoteChildren', { count: directChildGroupCount })}
+                      </p>
+                    )}
+                    <p className="text-sm text-slate-500 light:text-slate-600">{t('deleteCannotUndo')}</p>
+                  </>
+                );
+              })()}
+            </div>
+          )}
+
+          <div className="flex justify-end gap-3 pt-2">
+            <Button
+              variant="secondary"
+              onClick={() => {
+                setShowDeleteGroupConfirm(false);
+                setDeleteGroupTarget(null);
+              }}
+            >
+              {tCommon('cancel')}
+            </Button>
+            <Button
+              variant="danger"
+              loading={!!deleteGroupTarget && deletingGroupId === deleteGroupTarget.id}
+              disabled={!deleteGroupTarget}
+              onClick={async () => {
+                if (!deleteGroupTarget) return;
+                const ok = await deleteGroupById(deleteGroupTarget.id);
+                if (ok) {
+                  setShowDeleteGroupConfirm(false);
+                  setDeleteGroupTarget(null);
+                }
+              }}
+            >
+              <Trash2 className="w-4 h-4" />
+              {tCommon('delete')}
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
       {/* New Prompt Modal */}
-      <Modal isOpen={showNewPrompt} onClose={() => setShowNewPrompt(false)} title={t("newPrompt")}>
+      <Modal
+        isOpen={showNewPrompt}
+        onClose={() => {
+          setShowNewPrompt(false);
+          setNewPromptGroupId('');
+        }}
+        title={t("newPrompt")}
+      >
         <div className="space-y-4">
           <Input
             label={t("promptName")}
@@ -1444,8 +2094,23 @@ export function PromptsPage() {
             placeholder={t("promptNamePlaceholder")}
             autoFocus
           />
+          <Select
+            label={t('group')}
+            value={newPromptGroupId}
+            onChange={(e) => setNewPromptGroupId(e.target.value)}
+            options={[
+              { value: '', label: t('noGroup') },
+              ...groupSelectOptions.map((g) => ({ value: g.value, label: g.label })),
+            ]}
+          />
           <div className="flex justify-end gap-3">
-            <Button variant="ghost" onClick={() => setShowNewPrompt(false)}>
+            <Button
+              variant="ghost"
+              onClick={() => {
+                setShowNewPrompt(false);
+                setNewPromptGroupId('');
+              }}
+            >
               {tCommon('cancel')}
             </Button>
             <Button onClick={handleCreatePrompt} disabled={!newPromptName.trim()}>
@@ -1699,6 +2364,7 @@ export function PromptsPage() {
                   options={[
                     { value: '', label: tEval('ocrProviderFollow') },
                     { value: 'paddle', label: 'PaddleOCR' },
+                    { value: 'paddle_vl', label: tEval('ocrProviderPaddleVl') },
                     { value: 'datalab', label: tEval('ocrProviderDatalab') },
                   ]}
                 />

@@ -9,6 +9,11 @@ import type {
   RegisterInput,
   LoginInput,
   DemoTokenResponse,
+  AuthConfig,
+  SendCodeInput,
+  SendCodeResponse,
+  ForgotPasswordInput,
+  ResetPasswordInput,
 } from '@ssrprompt/shared';
 
 export const authApi = {
@@ -58,6 +63,30 @@ export const authApi = {
       currentPassword,
       newPassword,
     }),
+
+  /**
+   * Get public auth config
+   */
+  getConfig: (): Promise<AuthConfig> =>
+    apiClient.get<AuthConfig>('/auth/config'),
+
+  /**
+   * Send verification code (register/reset_password)
+   */
+  sendCode: (data: SendCodeInput): Promise<SendCodeResponse> =>
+    apiClient.post<SendCodeResponse>('/auth/send-code', data),
+
+  /**
+   * Forgot password (send reset code)
+   */
+  forgotPassword: (data: ForgotPasswordInput): Promise<SendCodeResponse> =>
+    apiClient.post<SendCodeResponse>('/auth/forgot-password', data),
+
+  /**
+   * Reset password (verify code + set new password)
+   */
+  resetPassword: (data: ResetPasswordInput): Promise<{ success: boolean }> =>
+    apiClient.post<{ success: boolean }>('/auth/reset-password', data),
 };
 
 export default authApi;

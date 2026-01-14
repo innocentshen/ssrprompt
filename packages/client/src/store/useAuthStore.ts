@@ -28,6 +28,7 @@ interface AuthState {
   enterDemoMode: () => Promise<void>;
   fetchCurrentUser: () => Promise<void>;
   setTokens: (accessToken: string, refreshToken: string | null) => void;
+  loginWithTokens: (accessToken: string, refreshToken: string) => Promise<void>;
   clearAuth: () => void;
   clearError: () => void;
   initialize: () => Promise<void>;
@@ -139,12 +140,31 @@ export const useAuthStore = create<AuthState>()(
         refreshAccessToken: async () => {
           const { refreshToken, isDemo } = get();
 
-          // Demo mode - get new demo token
+          // Demo mode - get new demo token (use initDemoSession to avoid auth header)
           if (isDemo) {
             try {
-              await get().enterDemoMode();
+              const { token, userId } = await apiClient.initDemoSession();
+              const now = Date.now();
+
+              set({
+                user: {
+                  id: userId,
+                  email: '',
+                  status: 'active',
+                  emailVerified: false,
+                  createdAt: new Date().toISOString(),
+                  updatedAt: new Date().toISOString(),
+                },
+                accessToken: token,
+                isAuthenticated: true,
+                isDemo: true,
+                demoStartedAt: get().demoStartedAt || now,
+              });
+
               return true;
             } catch {
+              // Demo refresh failed - clear auth
+              get().clearAuth();
               return false;
             }
           }
@@ -232,6 +252,32 @@ export const useAuthStore = create<AuthState>()(
         },
 
         /**
+         * Complete OAuth login by storing tokens and fetching user
+         */
+        loginWithTokens: async (accessToken: string, refreshToken: string) => {
+          set({
+            isLoading: true,
+            error: null,
+            accessToken,
+            refreshToken,
+            isAuthenticated: true,
+            isDemo: false,
+          });
+
+          apiClient.setToken(accessToken);
+
+          try {
+            const user = await authApi.getMe();
+            set({ user, isLoading: false });
+          } catch (error) {
+            const message = error instanceof Error ? error.message : '登录失败';
+            get().clearAuth();
+            set({ error: message, isLoading: false });
+            throw error;
+          }
+        },
+
+        /**
          * Clear all auth state
          */
         clearAuth: () => {
@@ -288,6 +334,9 @@ export const useAuthStore = create<AuthState>()(
           set({ isLoading: true });
 
           const { accessToken, refreshToken, isDemo } = get();
+
+          // Register token refresh callback with API client
+          apiClient.setTokenRefresher(() => get().refreshAccessToken());
 
           // No tokens - not authenticated
           if (!accessToken) {

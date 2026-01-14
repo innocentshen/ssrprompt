@@ -3,8 +3,9 @@ import jwt from 'jsonwebtoken';
 import { randomUUID, randomBytes } from 'crypto';
 import { env } from '../config/env.js';
 import { usersRepository, sessionsRepository, type UserWithRoles } from '../repositories/users.repository.js';
-import { UnauthorizedError, ConflictError, NotFoundError } from '@ssrprompt/shared';
+import { UnauthorizedError, ConflictError, NotFoundError, ValidationError } from '@ssrprompt/shared';
 import type { User, AuthResponse, TokenPair, JwtPayload } from '@ssrprompt/shared';
+import { verificationService } from './verification.service.js';
 
 const SALT_ROUNDS = 12;
 const ACCESS_TOKEN_EXPIRY = '15m';
@@ -21,11 +22,19 @@ export class AuthService {
     email: string;
     password: string;
     name?: string;
+    code?: string;
   }): Promise<AuthResponse> {
     // Check if email already exists
     const existingUser = await usersRepository.findByEmail(data.email);
     if (existingUser) {
       throw new ConflictError('Email already registered');
+    }
+
+    if (env.REQUIRE_EMAIL_VERIFICATION) {
+      if (!data.code) {
+        throw new ValidationError('Validation failed', { code: ['请输入邮箱验证码'] });
+      }
+      await verificationService.verifyCode(data.email, 'register', data.code);
     }
 
     // Hash password
@@ -37,6 +46,7 @@ export class AuthService {
         email: data.email,
         passwordHash,
         name: data.name,
+        emailVerified: env.REQUIRE_EMAIL_VERIFICATION ? true : undefined,
       },
       'user'
     );
@@ -87,6 +97,34 @@ export class AuthService {
     await usersRepository.updateLastLogin(user.id);
 
     // Generate tokens
+    const tokens = await this.generateTokenPair(user, meta);
+
+    return {
+      user: this.formatUser(user),
+      ...tokens,
+    };
+  }
+
+  /**
+   * Issue tokens for an existing user (used by OAuth login)
+   */
+  async createAuthResponseForUser(
+    userId: string,
+    meta?: { userAgent?: string; ipAddress?: string }
+  ): Promise<AuthResponse> {
+    const user = await usersRepository.findByIdWithRoles(userId);
+    if (!user) {
+      throw new NotFoundError('User', userId);
+    }
+
+    if (user.status === 'suspended') {
+      throw new UnauthorizedError('账号已被禁用，请联系管理员');
+    }
+    if (user.status === 'inactive') {
+      throw new UnauthorizedError('账号未激活');
+    }
+
+    await usersRepository.updateLastLogin(user.id);
     const tokens = await this.generateTokenPair(user, meta);
 
     return {
@@ -184,6 +222,32 @@ export class AuthService {
 
     // Invalidate all sessions
     await sessionsRepository.deleteAllByUserId(userId);
+  }
+
+  /**
+   * Send password reset verification code (no-op if user does not exist)
+   */
+  async sendPasswordResetCode(email: string): Promise<{ success: true; expiresIn: number } | null> {
+    const user = await usersRepository.findByEmail(email);
+    if (!user) return null;
+    return verificationService.sendCode(email, 'reset_password');
+  }
+
+  /**
+   * Reset password using email verification code
+   */
+  async resetPassword(email: string, code: string, newPassword: string): Promise<void> {
+    await verificationService.verifyCode(email, 'reset_password', code);
+
+    const user = await usersRepository.findByEmail(email);
+    if (!user) {
+      // Avoid leaking whether the email exists
+      throw new ValidationError('验证码无效或已过期');
+    }
+
+    const newPasswordHash = await bcrypt.hash(newPassword, SALT_ROUNDS);
+    await usersRepository.update(user.id, { passwordHash: newPasswordHash, emailVerified: true });
+    await sessionsRepository.deleteAllByUserId(user.id);
   }
 
   /**

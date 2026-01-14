@@ -15,7 +15,8 @@ function isValidUrl(value: string): boolean {
  * Environment variable schema with validation
  * Server will crash on startup if required variables are missing
  */
-const envSchema = z.object({
+const envSchema = z
+  .object({
   // Server
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
   PORT: z.string().transform(Number).default('3001'),
@@ -25,6 +26,11 @@ const envSchema = z.object({
 
   // Authentication
   JWT_SECRET: z.string().min(32, 'JWT_SECRET must be at least 32 characters'),
+  REQUIRE_EMAIL_VERIFICATION: z
+    .string()
+    .optional()
+    .default('false')
+    .transform((v) => v === 'true' || v === '1'),
 
   // Encryption
   ENCRYPTION_KEY: z.string().length(64, 'ENCRYPTION_KEY must be 64 hex characters (32 bytes)'),
@@ -58,7 +64,95 @@ const envSchema = z.object({
     .optional()
     .default('true')
     .transform((v) => v === 'true' || v === '1'),
-});
+
+  // Registration control
+  ALLOW_REGISTRATION: z
+    .string()
+    .optional()
+    .default('true')
+    .transform((v) => v === 'true' || v === '1'),
+
+  // SMTP (optional; required when using email verification / password reset emails)
+  SMTP_HOST: z.string().optional(),
+  SMTP_PORT: z.string().optional().default('587').transform(Number),
+  SMTP_SECURE: z
+    .string()
+    .optional()
+    .default('false')
+    .transform((v) => v === 'true' || v === '1'),
+  SMTP_USER: z.string().optional(),
+  SMTP_PASS: z.string().optional(),
+  SMTP_FROM: z.string().optional(),
+
+  // OAuth (optional; required when enabled)
+  OAUTH_GOOGLE_ENABLED: z
+    .string()
+    .optional()
+    .default('false')
+    .transform((v) => v === 'true' || v === '1'),
+  OAUTH_GOOGLE_CLIENT_ID: z.string().optional(),
+  OAUTH_GOOGLE_CLIENT_SECRET: z.string().optional(),
+  OAUTH_GOOGLE_CALLBACK_URL: z
+    .string()
+    .optional()
+    .refine((v) => v === undefined || isValidUrl(v), { message: 'OAUTH_GOOGLE_CALLBACK_URL must be a valid URL' }),
+
+  OAUTH_LINUXDO_ENABLED: z
+    .string()
+    .optional()
+    .default('false')
+    .transform((v) => v === 'true' || v === '1'),
+  OAUTH_LINUXDO_CLIENT_ID: z.string().optional(),
+  OAUTH_LINUXDO_CLIENT_SECRET: z.string().optional(),
+  OAUTH_LINUXDO_CALLBACK_URL: z
+    .string()
+    .optional()
+    .refine((v) => v === undefined || isValidUrl(v), { message: 'OAUTH_LINUXDO_CALLBACK_URL must be a valid URL' }),
+  })
+  .superRefine((values, ctx) => {
+    // Email verification requires SMTP configured
+    if (values.REQUIRE_EMAIL_VERIFICATION) {
+      const required: Array<keyof typeof values> = ['SMTP_HOST', 'SMTP_USER', 'SMTP_PASS', 'SMTP_FROM'];
+      required.forEach((key) => {
+        if (!values[key] || String(values[key]).trim().length === 0) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: [key],
+            message: `${String(key)} is required when REQUIRE_EMAIL_VERIFICATION is enabled`,
+          });
+        }
+      });
+    }
+
+    // OAuth providers require their credentials configured when enabled
+    if (values.OAUTH_GOOGLE_ENABLED) {
+      (['OAUTH_GOOGLE_CLIENT_ID', 'OAUTH_GOOGLE_CLIENT_SECRET', 'OAUTH_GOOGLE_CALLBACK_URL'] as const).forEach(
+        (key) => {
+          if (!values[key] || String(values[key]).trim().length === 0) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: [key],
+              message: `${String(key)} is required when OAUTH_GOOGLE_ENABLED is true`,
+            });
+          }
+        }
+      );
+    }
+
+    if (values.OAUTH_LINUXDO_ENABLED) {
+      (['OAUTH_LINUXDO_CLIENT_ID', 'OAUTH_LINUXDO_CLIENT_SECRET', 'OAUTH_LINUXDO_CALLBACK_URL'] as const).forEach(
+        (key) => {
+          if (!values[key] || String(values[key]).trim().length === 0) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: [key],
+              message: `${String(key)} is required when OAUTH_LINUXDO_ENABLED is true`,
+            });
+          }
+        }
+      );
+    }
+  });
 
 export type Env = z.infer<typeof envSchema>;
 

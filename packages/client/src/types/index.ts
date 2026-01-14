@@ -18,6 +18,9 @@ export type {
   CopyPublicPromptDto,
   CreatePromptDto,
   UpdatePromptDto,
+  PromptGroup,
+  CreatePromptGroupDto,
+  UpdatePromptGroupDto,
 
   // Evaluation types
   Evaluation,

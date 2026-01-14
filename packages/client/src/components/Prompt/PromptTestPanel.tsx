@@ -117,6 +117,7 @@ export function PromptTestPanel({
   const [renderMarkdown, setRenderMarkdown] = useState(true);
   const [previewAttachment, setPreviewAttachment] = useState<FileAttachment | null>(null);
   const [processingStage, setProcessingStage] = useState<'idle' | 'ocr' | 'llm'>('idle');
+  const [isUploading, setIsUploading] = useState(false);
 
   // File attachments - use external state if provided, otherwise internal
   const [internalAttachedFiles, setInternalAttachedFiles] = useState<FileAttachment[]>([]);
@@ -388,6 +389,8 @@ export function PromptTestPanel({
     const maxSize = 20 * 1024 * 1024;
     const newAttachments: FileAttachment[] = [];
 
+    setIsUploading(true);
+
     for (const file of Array.from(files)) {
       if (file.size > maxSize) {
         showToast('error', t('fileTooLarge', { name: file.name }));
@@ -408,6 +411,8 @@ export function PromptTestPanel({
       }
     }
 
+    setIsUploading(false);
+
     if (newAttachments.length > 0) {
       setAttachedFiles([...attachedFiles, ...newAttachments]);
     }
@@ -420,6 +425,19 @@ export function PromptTestPanel({
   const handlePaste = async (e: React.ClipboardEvent) => {
     const items = e.clipboardData.items;
     const newAttachments: FileAttachment[] = [];
+    let hasImage = false;
+
+    for (const item of Array.from(items)) {
+      if (item.type.startsWith('image/')) {
+        hasImage = true;
+        break;
+      }
+    }
+
+    if (!hasImage) return;
+
+    setIsUploading(true);
+
     for (const item of Array.from(items)) {
       if (item.type.startsWith('image/')) {
         e.preventDefault();
@@ -439,6 +457,8 @@ export function PromptTestPanel({
         }
       }
     }
+
+    setIsUploading(false);
 
     if (newAttachments.length > 0) {
       setAttachedFiles([...attachedFiles, ...newAttachments]);
@@ -555,13 +575,14 @@ export function PromptTestPanel({
                 <Select
                   value={ocrProviderOverride}
                   onChange={(e) => setOcrProviderOverride(e.target.value as OcrProvider | '')}
-                  options={[
-                    { value: '', label: tEval('ocrProviderFollow') },
-                    { value: 'paddle', label: 'PaddleOCR' },
-                    { value: 'datalab', label: tEval('ocrProviderDatalab') },
-                  ]}
-                />
-              )}
+                   options={[
+                     { value: '', label: tEval('ocrProviderFollow') },
+                     { value: 'paddle', label: 'PaddleOCR' },
+                     { value: 'paddle_vl', label: tEval('ocrProviderPaddleVl') },
+                     { value: 'datalab', label: tEval('ocrProviderDatalab') },
+                   ]}
+                 />
+               )}
             </div>
             {attachedFiles.length > 0 && (
               <div className="flex items-center gap-2 text-xs text-slate-500 light:text-slate-600">
@@ -586,6 +607,12 @@ export function PromptTestPanel({
               onChange={handleFileSelect}
               className="hidden"
             />
+            {isUploading && (
+              <div className="flex items-center gap-2 p-2 bg-slate-800/50 light:bg-slate-50 border border-slate-700 light:border-slate-300 rounded-lg">
+                <Loader2 className="w-4 h-4 animate-spin text-cyan-400" />
+                <span className="text-xs text-slate-400 light:text-slate-600">{t('uploading')}</span>
+              </div>
+            )}
             {attachedFiles.length > 0 ? (
               <div className="space-y-1.5">
                 {attachedFiles.map((file, index) => {

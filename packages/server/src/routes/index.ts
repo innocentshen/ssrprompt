@@ -6,6 +6,7 @@ import healthRoutes from './health.routes.js';
 import providersRoutes from './providers.routes.js';
 import modelsRoutes from './models.routes.js';
 import promptsRoutes from './prompts.routes.js';
+import promptGroupsRoutes from './prompt-groups.routes.js';
 import tracesRoutes from './traces.routes.js';
 import statsRoutes from './stats.routes.js';
 import evaluationsRoutes from './evaluations.routes.js';
@@ -27,6 +28,7 @@ router.use('/health', healthRoutes);
 router.use('/providers', authenticateJWT, providersRoutes);
 router.use('/models', authenticateJWT, modelsRoutes);
 router.use('/prompts', authenticateJWT, promptsRoutes);
+router.use('/prompt-groups', authenticateJWT, promptGroupsRoutes);
 router.use('/traces', authenticateJWT, tracesRoutes);
 router.use('/stats', statsRoutes);
 

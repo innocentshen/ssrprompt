@@ -1,11 +1,79 @@
 import { Router, type IRouter, type Request, type Response } from 'express';
+import { randomBytes } from 'crypto';
 import { generateDemoToken, authenticateJWT } from '../middleware/auth.js';
 import { authService } from '../services/auth.service.js';
 import { prisma } from '../config/database.js';
-import { RegisterSchema, LoginSchema, RefreshTokenSchema, ChangePasswordSchema } from '@ssrprompt/shared';
-import { ValidationError } from '@ssrprompt/shared';
+import { env } from '../config/env.js';
+import {
+  RegisterSchema,
+  LoginSchema,
+  RefreshTokenSchema,
+  ChangePasswordSchema,
+  SendCodeSchema,
+  ForgotPasswordSchema,
+  ResetPasswordSchema,
+} from '@ssrprompt/shared';
+import { ValidationError, AppError, ConflictError } from '@ssrprompt/shared';
 import { asyncHandler } from '../utils/async-handler.js';
 import rateLimit from 'express-rate-limit';
+import { verificationService } from '../services/verification.service.js';
+import { usersRepository } from '../repositories/users.repository.js';
+import { oauthService } from '../services/oauth.service.js';
+
+type OAuthStateCookie = { nonce: string; redirect: string };
+
+function parseCookies(cookieHeader: string | undefined): Record<string, string> {
+  if (!cookieHeader) return {};
+  return cookieHeader.split(';').reduce<Record<string, string>>((acc, part) => {
+    const [key, ...rest] = part.trim().split('=');
+    if (!key) return acc;
+    acc[key] = rest.join('=');
+    return acc;
+  }, {});
+}
+
+function setCookie(
+  res: Response,
+  name: string,
+  value: string,
+  options: { path: string; maxAgeSeconds: number; httpOnly?: boolean; sameSite?: 'Lax' | 'Strict' | 'None'; secure?: boolean }
+) {
+  const parts = [`${name}=${value}`, `Path=${options.path}`, `Max-Age=${options.maxAgeSeconds}`];
+  if (options.httpOnly) parts.push('HttpOnly');
+  if (options.sameSite) parts.push(`SameSite=${options.sameSite}`);
+  if (options.secure) parts.push('Secure');
+  res.setHeader('Set-Cookie', parts.join('; '));
+}
+
+function clearCookie(res: Response, name: string, path: string) {
+  res.setHeader('Set-Cookie', `${name}=; Path=${path}; Max-Age=0; HttpOnly; SameSite=Lax`);
+}
+
+function resolveOauthRedirect(rawRedirect?: string): string {
+  const allowedOrigins = env.CORS_ORIGIN.split(',').map((o) => o.trim()).filter(Boolean);
+  const defaultOrigin = allowedOrigins[0] || 'http://localhost:5173';
+
+  if (!rawRedirect) {
+    return new URL('/oauth/callback', defaultOrigin).toString();
+  }
+
+  if (rawRedirect.startsWith('/')) {
+    return new URL(rawRedirect, defaultOrigin).toString();
+  }
+
+  let url: URL;
+  try {
+    url = new URL(rawRedirect);
+  } catch {
+    throw new ValidationError('Invalid redirect URL');
+  }
+
+  if (!allowedOrigins.includes(url.origin)) {
+    throw new ValidationError('Invalid redirect URL');
+  }
+
+  return url.toString();
+}
 
 const router: IRouter = Router();
 
@@ -34,6 +102,22 @@ const registerRateLimit = rateLimit({
       error: {
         code: 'RATE_LIMIT_EXCEEDED',
         message: '注册尝试次数过多，请稍后再试',
+        requestId: req.requestId,
+      },
+    });
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+const sendCodeRateLimit = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 10, // 10 send attempts per window per IP
+  handler: (req, res) => {
+    res.status(429).json({
+      error: {
+        code: 'RATE_LIMIT_EXCEEDED',
+        message: '验证码发送过于频繁，请稍后再试',
         requestId: req.requestId,
       },
     });
@@ -77,6 +161,11 @@ router.post(
   '/register',
   registerRateLimit,
   asyncHandler(async (req: Request, res: Response) => {
+    // Check if registration is allowed
+    if (!env.ALLOW_REGISTRATION) {
+      throw new AppError(403, 'REGISTRATION_DISABLED', '管理员已关闭注册渠道');
+    }
+
     const result = RegisterSchema.safeParse(req.body);
     if (!result.success) {
       throw new ValidationError('Validation failed', result.error.flatten().fieldErrors);
@@ -85,6 +174,295 @@ router.post(
     const response = await authService.register(result.data);
 
     res.status(201).json({ data: response });
+  })
+);
+
+/**
+ * @swagger
+ * /auth/send-code:
+ *   post:
+ *     tags: [Auth]
+ *     summary: 发送邮箱验证码（注册/重置密码）
+ *     security: []
+ */
+router.post(
+  '/send-code',
+  sendCodeRateLimit,
+  asyncHandler(async (req: Request, res: Response) => {
+    const result = SendCodeSchema.safeParse(req.body);
+    if (!result.success) {
+      throw new ValidationError('Validation failed', result.error.flatten().fieldErrors);
+    }
+
+    const { email, type } = result.data;
+
+    if (type === 'register') {
+      if (!env.ALLOW_REGISTRATION) {
+        throw new AppError(403, 'REGISTRATION_DISABLED', '管理员已关闭注册渠道');
+      }
+      if (!env.REQUIRE_EMAIL_VERIFICATION) {
+        throw new AppError(400, 'INVALID_REQUEST', '邮箱验证码注册未开启');
+      }
+      const exists = await usersRepository.emailExists(email);
+      if (exists) {
+        throw new ConflictError('Email already registered');
+      }
+
+      const response = await verificationService.sendCode(email, 'register');
+      res.json({ data: response });
+      return;
+    }
+
+    // reset_password: do not reveal whether email exists
+    await authService.sendPasswordResetCode(email);
+    res.json({ data: { success: true, expiresIn: 15 * 60 } });
+  })
+);
+
+/**
+ * @swagger
+ * /auth/forgot-password:
+ *   post:
+ *     tags: [Auth]
+ *     summary: 忘记密码（发送重置验证码）
+ *     security: []
+ */
+router.post(
+  '/forgot-password',
+  sendCodeRateLimit,
+  asyncHandler(async (req: Request, res: Response) => {
+    const result = ForgotPasswordSchema.safeParse(req.body);
+    if (!result.success) {
+      throw new ValidationError('Validation failed', result.error.flatten().fieldErrors);
+    }
+
+    await authService.sendPasswordResetCode(result.data.email);
+    res.json({ data: { success: true, expiresIn: 15 * 60 } });
+  })
+);
+
+/**
+ * @swagger
+ * /auth/reset-password:
+ *   post:
+ *     tags: [Auth]
+ *     summary: 重置密码（验证码+新密码）
+ *     security: []
+ */
+router.post(
+  '/reset-password',
+  asyncHandler(async (req: Request, res: Response) => {
+    const result = ResetPasswordSchema.safeParse(req.body);
+    if (!result.success) {
+      throw new ValidationError('Validation failed', result.error.flatten().fieldErrors);
+    }
+
+    await authService.resetPassword(result.data.email, result.data.code, result.data.newPassword);
+    res.json({ data: { success: true } });
+  })
+);
+
+/**
+ * @swagger
+ * /auth/oauth/google:
+ *   get:
+ *     tags: [Auth]
+ *     summary: Google OAuth 登录（跳转）
+ *     security: []
+ */
+router.get(
+  '/oauth/google',
+  asyncHandler(async (req: Request, res: Response) => {
+    if (!env.OAUTH_GOOGLE_ENABLED) {
+      throw new AppError(400, 'INVALID_REQUEST', 'Google OAuth 未启用');
+    }
+
+    const state = randomBytes(16).toString('hex');
+    const redirect = resolveOauthRedirect(typeof req.query.redirect === 'string' ? req.query.redirect : undefined);
+
+    const cookie: OAuthStateCookie = { nonce: state, redirect };
+    const cookieValue = Buffer.from(JSON.stringify(cookie), 'utf8').toString('base64url');
+
+    setCookie(res, 'oauth_state_google', cookieValue, {
+      path: '/api/v1/auth/oauth/google/callback',
+      maxAgeSeconds: 5 * 60,
+      httpOnly: true,
+      sameSite: 'Lax',
+      secure: env.NODE_ENV === 'production',
+    });
+
+    res.redirect(oauthService.getAuthorizeUrl('google', state));
+  })
+);
+
+/**
+ * @swagger
+ * /auth/oauth/google/callback:
+ *   get:
+ *     tags: [Auth]
+ *     summary: Google OAuth 回调
+ *     security: []
+ */
+router.get(
+  '/oauth/google/callback',
+  asyncHandler(async (req: Request, res: Response) => {
+    const cookies = parseCookies(req.headers.cookie);
+    const cookieName = 'oauth_state_google';
+    const cookiePath = '/api/v1/auth/oauth/google/callback';
+
+    let redirectUrl = resolveOauthRedirect();
+    let expectedState: string | null = null;
+
+    const rawCookie = cookies[cookieName];
+    if (rawCookie) {
+      try {
+        const decoded = Buffer.from(rawCookie, 'base64url').toString('utf8');
+        const parsed = JSON.parse(decoded) as OAuthStateCookie;
+        if (parsed.redirect) redirectUrl = parsed.redirect;
+        if (parsed.nonce) expectedState = parsed.nonce;
+      } catch {
+        // Ignore cookie parse errors; fall back to default redirect.
+      }
+    }
+
+    clearCookie(res, cookieName, cookiePath);
+
+    const oauthError = typeof req.query.error === 'string' ? req.query.error : undefined;
+    if (oauthError) {
+      const url = new URL(redirectUrl);
+      url.searchParams.set('error', oauthError);
+      res.redirect(url.toString());
+      return;
+    }
+
+    const code = typeof req.query.code === 'string' ? req.query.code : undefined;
+    const state = typeof req.query.state === 'string' ? req.query.state : undefined;
+
+    if (!code || !state || !expectedState || state !== expectedState) {
+      const url = new URL(redirectUrl);
+      url.searchParams.set('error', 'Invalid OAuth state');
+      res.redirect(url.toString());
+      return;
+    }
+
+    try {
+      const auth = await oauthService.handleCallback('google', code, {
+        userAgent: req.headers['user-agent'],
+        ipAddress: req.ip,
+      });
+
+      const url = new URL(redirectUrl);
+      url.searchParams.set('accessToken', auth.accessToken);
+      url.searchParams.set('refreshToken', auth.refreshToken);
+      url.searchParams.set('expiresAt', String(auth.expiresAt));
+      res.redirect(url.toString());
+    } catch (error) {
+      const url = new URL(redirectUrl);
+      url.searchParams.set('error', error instanceof Error ? error.message : 'OAuth login failed');
+      res.redirect(url.toString());
+    }
+  })
+);
+
+/**
+ * @swagger
+ * /auth/oauth/linuxdo:
+ *   get:
+ *     tags: [Auth]
+ *     summary: Linux.do OAuth 登录（跳转）
+ *     security: []
+ */
+router.get(
+  '/oauth/linuxdo',
+  asyncHandler(async (req: Request, res: Response) => {
+    if (!env.OAUTH_LINUXDO_ENABLED) {
+      throw new AppError(400, 'INVALID_REQUEST', 'Linux.do OAuth 未启用');
+    }
+
+    const state = randomBytes(16).toString('hex');
+    const redirect = resolveOauthRedirect(typeof req.query.redirect === 'string' ? req.query.redirect : undefined);
+
+    const cookie: OAuthStateCookie = { nonce: state, redirect };
+    const cookieValue = Buffer.from(JSON.stringify(cookie), 'utf8').toString('base64url');
+
+    setCookie(res, 'oauth_state_linuxdo', cookieValue, {
+      path: '/api/v1/auth/oauth/linuxdo/callback',
+      maxAgeSeconds: 5 * 60,
+      httpOnly: true,
+      sameSite: 'Lax',
+      secure: env.NODE_ENV === 'production',
+    });
+
+    res.redirect(oauthService.getAuthorizeUrl('linuxdo', state));
+  })
+);
+
+/**
+ * @swagger
+ * /auth/oauth/linuxdo/callback:
+ *   get:
+ *     tags: [Auth]
+ *     summary: Linux.do OAuth 回调
+ *     security: []
+ */
+router.get(
+  '/oauth/linuxdo/callback',
+  asyncHandler(async (req: Request, res: Response) => {
+    const cookies = parseCookies(req.headers.cookie);
+    const cookieName = 'oauth_state_linuxdo';
+    const cookiePath = '/api/v1/auth/oauth/linuxdo/callback';
+
+    let redirectUrl = resolveOauthRedirect();
+    let expectedState: string | null = null;
+
+    const rawCookie = cookies[cookieName];
+    if (rawCookie) {
+      try {
+        const decoded = Buffer.from(rawCookie, 'base64url').toString('utf8');
+        const parsed = JSON.parse(decoded) as OAuthStateCookie;
+        if (parsed.redirect) redirectUrl = parsed.redirect;
+        if (parsed.nonce) expectedState = parsed.nonce;
+      } catch {
+        // Ignore cookie parse errors; fall back to default redirect.
+      }
+    }
+
+    clearCookie(res, cookieName, cookiePath);
+
+    const oauthError = typeof req.query.error === 'string' ? req.query.error : undefined;
+    if (oauthError) {
+      const url = new URL(redirectUrl);
+      url.searchParams.set('error', oauthError);
+      res.redirect(url.toString());
+      return;
+    }
+
+    const code = typeof req.query.code === 'string' ? req.query.code : undefined;
+    const state = typeof req.query.state === 'string' ? req.query.state : undefined;
+
+    if (!code || !state || !expectedState || state !== expectedState) {
+      const url = new URL(redirectUrl);
+      url.searchParams.set('error', 'Invalid OAuth state');
+      res.redirect(url.toString());
+      return;
+    }
+
+    try {
+      const auth = await oauthService.handleCallback('linuxdo', code, {
+        userAgent: req.headers['user-agent'],
+        ipAddress: req.ip,
+      });
+
+      const url = new URL(redirectUrl);
+      url.searchParams.set('accessToken', auth.accessToken);
+      url.searchParams.set('refreshToken', auth.refreshToken);
+      url.searchParams.set('expiresAt', String(auth.expiresAt));
+      res.redirect(url.toString());
+    } catch (error) {
+      const url = new URL(redirectUrl);
+      url.searchParams.set('error', error instanceof Error ? error.message : 'OAuth login failed');
+      res.redirect(url.toString());
+    }
   })
 );
 
@@ -330,6 +708,33 @@ router.get(
         user: {
           id: userId,
           tenantType: 'demo',
+        },
+      },
+    });
+  })
+);
+
+/**
+ * @swagger
+ * /auth/config:
+ *   get:
+ *     tags: [Auth]
+ *     summary: 获取公共配置
+ *     security: []
+ *     responses:
+ *       200:
+ *         description: 成功
+ */
+router.get(
+  '/config',
+  asyncHandler(async (_req: Request, res: Response) => {
+    res.json({
+      data: {
+        allowRegistration: env.ALLOW_REGISTRATION,
+        requireEmailVerification: env.REQUIRE_EMAIL_VERIFICATION,
+        oauth: {
+          google: { enabled: env.OAUTH_GOOGLE_ENABLED },
+          linuxdo: { enabled: env.OAUTH_LINUXDO_ENABLED },
         },
       },
     });

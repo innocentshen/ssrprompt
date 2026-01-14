@@ -11,7 +11,6 @@ import {
   RefreshCw,
   AlertCircle,
   CheckCircle2,
-  Image,
   Brain,
   Wrench,
 } from 'lucide-react';
@@ -59,6 +58,7 @@ export function ProviderForm({
   onDelete,
   onAddModel,
   onRemoveModel,
+  onToggleVision,
   onTestConnection,
 }: ProviderFormProps) {
   const [name, setName] = useState('');
@@ -444,11 +444,22 @@ export function ProviderForm({
                     <div className="flex items-center gap-2">
                       {/* 能力图标 */}
                       <div className="flex items-center gap-1">
-                        {(model.supportsVision ?? inferVisionSupport(model.modelId)) && (
-                          <span title={t('supportsVision')} className="p-1 rounded bg-slate-700/50 light:bg-slate-200">
-                            <Image className="w-3 h-3 text-cyan-400" />
-                          </span>
-                        )}
+                        <button
+                          type="button"
+                          onClick={() => onToggleVision?.(model.id, !(model.supportsVision ?? inferVisionSupport(model.modelId)))}
+                          title={t('vision')}
+                          className={`p-1 rounded transition-colors ${
+                            (model.supportsVision ?? inferVisionSupport(model.modelId))
+                              ? 'bg-slate-700/50 light:bg-slate-200 hover:bg-slate-600 light:hover:bg-slate-300'
+                              : 'bg-slate-800/50 light:bg-slate-100 hover:bg-slate-700 light:hover:bg-slate-200'
+                          }`}
+                        >
+                          {(model.supportsVision ?? inferVisionSupport(model.modelId)) ? (
+                            <Eye className="w-3 h-3 text-cyan-400" />
+                          ) : (
+                            <EyeOff className="w-3 h-3 text-slate-500" />
+                          )}
+                        </button>
                         {(model.supportsReasoning ?? inferReasoningSupport(model.modelId)) && (
                           <span title={t('supportsReasoning')} className="p-1 rounded bg-slate-700/50 light:bg-slate-200">
                             <Brain className="w-3 h-3 text-purple-400" />

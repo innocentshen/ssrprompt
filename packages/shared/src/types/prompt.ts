@@ -45,6 +45,7 @@ export interface Prompt {
   config: PromptConfig;
   currentVersion: number;
   defaultModelId: string | null;
+  groupId: string | null;
   orderIndex: number;
   isPublic: boolean;
   createdAt: string;
@@ -86,6 +87,7 @@ export interface CreatePromptDto {
   messages?: PromptMessage[];
   config?: PromptConfig;
   defaultModelId?: string;
+  groupId?: string | null;
 }
 
 export interface UpdatePromptDto {
@@ -96,6 +98,7 @@ export interface UpdatePromptDto {
   messages?: PromptMessage[];
   config?: PromptConfig;
   defaultModelId?: string | null;
+  groupId?: string | null;
   orderIndex?: number;
   isPublic?: boolean;
 }
@@ -108,10 +111,35 @@ export interface PromptListItem {
   description: string | null;
   currentVersion: number;
   defaultModelId: string | null;
+  groupId: string | null;
   orderIndex: number;
   isPublic: boolean;
   createdAt: string;
   updatedAt: string;
+}
+
+// ============ Prompt Group Types ============
+
+export interface PromptGroup {
+  id: string;
+  userId: string;
+  name: string;
+  parentId: string | null;
+  orderIndex: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CreatePromptGroupDto {
+  name: string;
+  parentId?: string | null;
+  orderIndex?: number;
+}
+
+export interface UpdatePromptGroupDto {
+  name?: string;
+  parentId?: string | null;
+  orderIndex?: number;
 }
 
 // ============ Public Prompt Plaza Types ============

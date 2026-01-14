@@ -80,3 +80,23 @@ export interface SessionInfo {
   expiresAt: string;
   isCurrent: boolean;
 }
+
+// Email verification
+export type EmailVerificationType = 'register' | 'reset_password';
+
+// OAuth providers
+export type OAuthProvider = 'google' | 'linuxdo';
+
+export interface AuthConfig {
+  allowRegistration: boolean;
+  requireEmailVerification: boolean;
+  oauth: {
+    google: { enabled: boolean };
+    linuxdo: { enabled: boolean };
+  };
+}
+
+export interface SendCodeResponse {
+  success: true;
+  expiresIn: number;
+}

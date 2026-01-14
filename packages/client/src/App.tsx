@@ -16,6 +16,8 @@ import {
   PromptWizardPage,
   PromptPlazaPage,
   LoginPage,
+  ForgotPasswordPage,
+  OAuthCallbackPage,
 } from './pages';
 
 /**
@@ -75,6 +77,22 @@ function AppContent() {
         element={
           <PublicRoute>
             <LoginPage />
+          </PublicRoute>
+        }
+      />
+      <Route
+        path="/forgot-password"
+        element={
+          <PublicRoute>
+            <ForgotPasswordPage />
+          </PublicRoute>
+        }
+      />
+      <Route
+        path="/oauth/callback"
+        element={
+          <PublicRoute>
+            <OAuthCallbackPage />
           </PublicRoute>
         }
       />

@@ -63,7 +63,7 @@ const ChatCompletionSchema = z.object({
   responseFormat: z.record(z.unknown()).optional(),
   isEvalCase: z.boolean().optional().default(false),
   fileProcessing: z.enum(['auto', 'vision', 'ocr', 'none']).optional(),
-  ocrProvider: z.enum(['paddle', 'datalab']).optional(),
+  ocrProvider: z.enum(['paddle', 'paddle_vl', 'datalab']).optional(),
 });
 
 type IncomingChatMessage = z.infer<typeof ChatMessageSchema>;
@@ -127,7 +127,7 @@ async function expandMessages(
   userId: string,
   messages: IncomingChatMessage[],
   mode: 'vision' | 'ocr',
-  options?: { ocrProvider?: 'paddle' | 'datalab' }
+  options?: { ocrProvider?: 'paddle' | 'paddle_vl' | 'datalab' }
 ): Promise<ExpandedMessages> {
   const attachments: TraceAttachment[] = [];
   const seenFileIds = new Set<string>();

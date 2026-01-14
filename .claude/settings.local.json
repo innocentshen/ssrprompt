@@ -96,7 +96,9 @@
       "Bash(git stash:*)",
       "Bash(1 --accept-data-loss)",
       "Bash(npx prisma db:*)",
-      "Bash(tasklist:*)"
+      "Bash(tasklist:*)",
+      "WebFetch(domain:linux.do)",
+      "Bash(copy:*)"
     ]
   }
 }

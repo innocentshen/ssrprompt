@@ -151,6 +151,8 @@ export function SettingsPage() {
       setModels((prev) =>
         prev.map((m) => (m.id === modelId ? updated : m))
       );
+      // Sync to global store for other pages
+      refreshGlobalStore(true);
     } catch (err) {
       console.error('Failed to update model:', err);
       showToast('error', t('updateModelFailed'));

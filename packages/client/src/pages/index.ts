@@ -3,6 +3,8 @@ export { PromptsPage } from './PromptsPage';
 export { EvaluationPage } from './EvaluationPage';
 export { TracesPage } from './TracesPage';
 export { LoginPage } from './LoginPage';
+export { ForgotPasswordPage } from './ForgotPasswordPage';
+export { OAuthCallbackPage } from './OAuthCallbackPage';
 export { HomePage } from './HomePage';
 export { PromptWizardPage } from './PromptWizardPage';
 export { PromptPlazaPage } from './PromptPlazaPage';

@@ -160,6 +160,7 @@
   "fileProcessingOcr": "OCR（将图片/PDF 转文字）",
   "fileProcessingNone": "不处理（评测时忽略附件）",
   "ocrProviderFollow": "OCR 服务商：跟随设置",
+  "ocrProviderPaddleVl": "PaddleOCR-VL",
   "ocrProviderDatalab": "Datalab（实验）",
   "status": "状态",
   "testCasesCount": "测试用例 ({{count}})",

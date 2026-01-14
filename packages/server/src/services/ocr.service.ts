@@ -32,7 +32,7 @@ function normalizeBaseUrl(value: string | null | undefined): string | null {
 function paddleRequiresToken(baseUrl: string): boolean {
   try {
     const host = new URL(baseUrl).hostname.toLowerCase();
-    return host.endsWith('aistudio-app.com') || host.endsWith('ai.baidu.com');
+    return host.endsWith('aistudio-app.com') || host.endsWith('aistudio.baidu.com') || host.endsWith('ai.baidu.com');
   } catch {
     return false;
   }
@@ -126,6 +126,23 @@ function extractPaddleText(prunedResult: unknown): string {
   return deduped.join('\n');
 }
 
+function extractPaddleVlText(layoutParsingResult: unknown): string {
+  if (!layoutParsingResult) return '';
+  if (typeof layoutParsingResult === 'string') return layoutParsingResult.trim();
+
+  if (layoutParsingResult && typeof layoutParsingResult === 'object') {
+    const record = layoutParsingResult as Record<string, unknown>;
+    const markdownText = (record.markdown as any)?.text;
+    if (typeof markdownText === 'string') {
+      const v = markdownText.trim();
+      if (v) return v;
+    }
+    return extractPaddleText(record.prunedResult);
+  }
+
+  return '';
+}
+
 async function paddleOcrExtract(config: { baseUrl: string; apiKey?: string | null }, file: { buffer: Buffer; mimeType: string }): Promise<{ pages: string[]; fullText: string }> {
   const url = (() => {
     try {
@@ -138,6 +155,9 @@ async function paddleOcrExtract(config: { baseUrl: string; apiKey?: string | nul
       return config.baseUrl.endsWith('/ocr') ? config.baseUrl : `${config.baseUrl}/ocr`;
     }
   })();
+
+  console.log(`[OCR:Paddle] Starting request to ${url}, file size: ${file.buffer.byteLength} bytes`);
+
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     Accept: 'application/json',
@@ -155,6 +175,7 @@ async function paddleOcrExtract(config: { baseUrl: string; apiKey?: string | nul
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 120_000);
 
+  const requestStart = Date.now();
   try {
     const res = await fetch(url, {
       method: 'POST',
@@ -162,6 +183,8 @@ async function paddleOcrExtract(config: { baseUrl: string; apiKey?: string | nul
       body: JSON.stringify(body),
       signal: controller.signal,
     });
+
+    console.log(`[OCR:Paddle] Response received in ${Date.now() - requestStart}ms, status: ${res.status}`);
 
     const text = await res.text();
     const sanitizedText = text.replace(/^\uFEFF/, '');
@@ -206,6 +229,97 @@ async function paddleOcrExtract(config: { baseUrl: string; apiKey?: string | nul
   }
 }
 
+async function paddleOcrVlExtract(
+  config: { baseUrl: string; apiKey?: string | null },
+  file: { buffer: Buffer; mimeType: string }
+): Promise<{ pages: string[]; fullText: string }> {
+  const url = (() => {
+    try {
+      const u = new URL(config.baseUrl);
+      const segments = u.pathname.split('/').filter(Boolean);
+      if (segments.includes('layout-parsing')) return u.toString();
+      u.pathname = `${u.pathname.replace(/\/+$/, '')}/layout-parsing`;
+      return u.toString();
+    } catch {
+      return config.baseUrl.endsWith('/layout-parsing') ? config.baseUrl : `${config.baseUrl}/layout-parsing`;
+    }
+  })();
+
+  console.log(`[OCR:Paddle-VL] Starting request to ${url}, file size: ${file.buffer.byteLength} bytes`);
+
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    Accept: 'application/json',
+  };
+  if (config.apiKey && config.apiKey.trim()) {
+    // Baidu AI Studio PaddleOCR expects: Authorization: token <TOKEN>
+    headers['Authorization'] = buildAuthorization(config.apiKey, 'token');
+  }
+
+  const body = {
+    file: file.buffer.toString('base64'),
+    fileType: mimeToPaddleFileType(file.mimeType),
+    // Avoid returning large base64 images in the response; we only need text.
+    visualize: false,
+  };
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 180_000);
+
+  const requestStart = Date.now();
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+
+    console.log(`[OCR:Paddle-VL] Response received in ${Date.now() - requestStart}ms, status: ${res.status}`);
+
+    const text = await res.text();
+    const sanitizedText = text.replace(/^\uFEFF/, '');
+    let json: any;
+    try {
+      json = JSON.parse(sanitizedText);
+    } catch {
+      const contentType = res.headers.get('content-type');
+      const snippet = sanitizedText.trim().replace(/\s+/g, ' ').slice(0, 240);
+      const message = `PaddleOCR-VL returned non-JSON response (status ${res.status}${contentType ? `, content-type ${contentType}` : ''}${snippet ? `, snippet ${JSON.stringify(snippet)}` : ''})`;
+      throw new AppError(502, 'PROVIDER_ERROR', message, {
+        status: res.status,
+        contentType: res.headers.get('content-type'),
+        body: text.slice(0, 2000),
+      });
+    }
+
+    if (!res.ok) {
+      throw new AppError(502, 'PROVIDER_ERROR', 'PaddleOCR-VL request failed', { status: res.status, body: json });
+    }
+
+    if (json?.errorCode !== 0) {
+      throw new AppError(502, 'PROVIDER_ERROR', json?.errorMsg || 'PaddleOCR-VL returned error', { body: json });
+    }
+
+    const layoutParsingResults = json?.result?.layoutParsingResults;
+    if (!Array.isArray(layoutParsingResults) || layoutParsingResults.length === 0) {
+      return { pages: [], fullText: '' };
+    }
+
+    const pages = layoutParsingResults.map((r: any) => extractPaddleVlText(r)).map((p: string) => p.trim()).filter(Boolean);
+    const fullText = pages.join('\n\n');
+    return { pages, fullText };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (message.toLowerCase().includes('abort')) {
+      throw new AppError(504, 'PROVIDER_ERROR', 'PaddleOCR-VL timeout (180s)');
+    }
+    throw err;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 async function datalabExtract(
   config: { baseUrl: string; apiKey: string },
   file: { buffer: Buffer; mimeType: string; filename: string }
@@ -216,6 +330,8 @@ async function datalabExtract(
     'X-API-Key': config.apiKey,
   };
 
+  console.log(`[OCR:Datalab] Starting upload to ${markerUrl}, file: ${file.filename}, size: ${file.buffer.byteLength} bytes`);
+
   const form = new FormData();
   // Copy into a plain Uint8Array to avoid SharedArrayBuffer typing issues in Node fetch types.
   const bytes = new Uint8Array(file.buffer.byteLength);
@@ -225,6 +341,7 @@ async function datalabExtract(
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 180_000);
 
+  const uploadStart = Date.now();
   try {
     const startRes = await fetch(markerUrl, {
       method: 'POST',
@@ -232,6 +349,8 @@ async function datalabExtract(
       body: form,
       signal: controller.signal,
     });
+
+    console.log(`[OCR:Datalab] Upload completed in ${Date.now() - uploadStart}ms, status: ${startRes.status}`);
 
     const startText = await startRes.text();
     let startJson: any;
@@ -247,6 +366,7 @@ async function datalabExtract(
 
     const requestId = startJson?.request_id || startJson?.requestId;
     const requestCheckUrl = startJson?.request_check_url || startJson?.requestCheckUrl;
+    console.log(`[OCR:Datalab] Got request_id: ${requestId}, polling...`);
 
     const checkUrl: string | null =
       typeof requestCheckUrl === 'string'
@@ -278,6 +398,7 @@ async function datalabExtract(
       }
 
       const status = String(pollJson?.status || '').toLowerCase();
+      console.log(`[OCR:Datalab] Poll status: ${status}, elapsed: ${Date.now() - pollStart}ms`);
 
       if (status === 'completed' || status === 'complete' || status === 'success') {
         const markdown = typeof pollJson?.markdown === 'string' ? pollJson.markdown : '';
@@ -318,18 +439,24 @@ export class OcrService {
 
   private async getSystemDefaults(): Promise<{
     paddle: { baseUrl: string | null; apiKey: string | null };
+    paddle_vl: { baseUrl: string | null; apiKey: string | null };
     datalab: { baseUrl: string | null; apiKey: string | null };
   }> {
     const rows = await prisma.ocrSystemProviderConfig.findMany();
     const byProvider = new Map(rows.map((r) => [r.provider as OcrProvider, r]));
 
     const paddleRow = byProvider.get('paddle') ?? null;
+    const paddleVlRow = byProvider.get('paddle_vl') ?? null;
     const datalabRow = byProvider.get('datalab') ?? null;
 
     return {
       paddle: {
         baseUrl: normalizeBaseUrl(paddleRow?.baseUrl ?? null),
         apiKey: safeDecrypt(paddleRow?.apiKey ?? null),
+      },
+      paddle_vl: {
+        baseUrl: normalizeBaseUrl(paddleVlRow?.baseUrl ?? null),
+        apiKey: safeDecrypt(paddleVlRow?.apiKey ?? null),
       },
       datalab: {
         baseUrl: normalizeBaseUrl(datalabRow?.baseUrl ?? null),
@@ -356,7 +483,9 @@ export class OcrService {
     const credentialSource = override?.credentialSource ?? (row?.credentialSource as OcrCredentialSource | undefined) ?? 'system';
 
     if (credentialSource === 'system') {
-      const defaults = provider === 'datalab' ? system.datalab : system.paddle;
+      const defaults = provider === 'datalab'
+        ? system.datalab
+        : (provider === 'paddle_vl' ? system.paddle_vl : system.paddle);
       return {
         enabled,
         provider,
@@ -404,6 +533,7 @@ export class OcrService {
       apiKeyLast4: row?.apiKeyLast4 ?? null,
       systemDefaults: {
         paddle: { baseUrl: system.paddle.baseUrl },
+        paddle_vl: { baseUrl: system.paddle_vl.baseUrl },
         datalab: { baseUrl: system.datalab.baseUrl },
       },
     };
@@ -480,6 +610,7 @@ export class OcrService {
 
     return {
       paddle: toConfig('paddle'),
+      paddle_vl: toConfig('paddle_vl'),
       datalab: toConfig('datalab'),
     };
   }
@@ -491,6 +622,7 @@ export class OcrService {
     }> = [];
 
     if (data.paddle) entries.push({ provider: 'paddle', config: data.paddle });
+    if (data.paddle_vl) entries.push({ provider: 'paddle_vl', config: data.paddle_vl });
     if (data.datalab) entries.push({ provider: 'datalab', config: data.datalab });
 
     for (const { provider, config } of entries) {
@@ -559,7 +691,7 @@ export class OcrService {
       };
     }
 
-    if (effective.provider === 'paddle' && !effective.apiKey && effective.baseUrl && paddleRequiresToken(effective.baseUrl)) {
+    if ((effective.provider === 'paddle' || effective.provider === 'paddle_vl') && !effective.apiKey && effective.baseUrl && paddleRequiresToken(effective.baseUrl)) {
       return {
         success: false,
         provider: effective.provider,
@@ -582,6 +714,26 @@ export class OcrService {
         return {
           success: true,
           provider: 'paddle',
+          latencyMs,
+          pageCount: pages.length || undefined,
+          charCount: fullText.length,
+          previewText,
+          pagesPreview: pages.slice(0, 5).map((p) => p.slice(0, 500)),
+        };
+      }
+
+      if (effective.provider === 'paddle_vl') {
+        const { pages, fullText } = await paddleOcrVlExtract(
+          { baseUrl: effective.baseUrl, apiKey: effective.apiKey },
+          { buffer: file.buffer, mimeType: file.mimeType }
+        );
+
+        const latencyMs = Date.now() - started;
+        const previewText = fullText.slice(0, OCR_TEST_PREVIEW_LIMIT);
+
+        return {
+          success: true,
+          provider: 'paddle_vl',
           latencyMs,
           pageCount: pages.length || undefined,
           charCount: fullText.length,
@@ -638,7 +790,7 @@ export class OcrService {
       throw new AppError(400, 'INVALID_REQUEST', 'Datalab API key is not configured');
     }
 
-    if (effective.provider === 'paddle' && !effective.apiKey && paddleRequiresToken(effective.baseUrl)) {
+    if ((effective.provider === 'paddle' || effective.provider === 'paddle_vl') && !effective.apiKey && paddleRequiresToken(effective.baseUrl)) {
       throw new AppError(400, 'INVALID_REQUEST', 'PaddleOCR token is not configured');
     }
 
@@ -671,6 +823,10 @@ export class OcrService {
 
       if (effective.provider === 'paddle') {
         const result = await paddleOcrExtract({ baseUrl: effective.baseUrl, apiKey: effective.apiKey }, { buffer, mimeType });
+        pages = result.pages;
+        fullText = result.fullText;
+      } else if (effective.provider === 'paddle_vl') {
+        const result = await paddleOcrVlExtract({ baseUrl: effective.baseUrl, apiKey: effective.apiKey }, { buffer, mimeType });
         pages = result.pages;
         fullText = result.fullText;
       } else {
